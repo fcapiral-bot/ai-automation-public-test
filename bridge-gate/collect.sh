@@ -3,7 +3,7 @@
 # JSON on stdout for gate.jq. Every failed or malformed call is recorded in `incomplete`, never
 # guessed around, so a flaky API can only ever produce BLOCKED, never a handoff.
 #
-# Env: REPO, PR_NUMBER (validated), EVENT_NAME, EVENT_KEY, KILL_SWITCH, HANDOFF_MODE,
+# Env: REPO, PR_NUMBER (validated), EVENT_NAME, EVENT_KEY, KILL_SWITCH, HANDOFF_MODE, DEFAULT_BRANCH (real mode only),
 #      GITHUB_RUN_ID (this run, to exclude the gate's own checks), GH (test hook), NOW, CONFIG.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -44,7 +44,7 @@ echo '[]' > "$tmp/check_runs.json"; echo 'null' > "$tmp/status.json"; echo '[]' 
 if [[ -n $HEAD ]]; then
   # Completion evidence for an in-flight attempt: the head commit's title and parent (see gate.jq `finished`).
   one head_commit '{subject: (.commit.message | split("\n")[0]), parents: [.parents[].sha]}' "$base/commits/$HEAD"
-  api check_runs '.check_runs[] | {name, status, conclusion, suite_id: .check_suite.id}' "$base/commits/$HEAD/check-runs"
+  api check_runs '.check_runs[] | {name, status, conclusion, suite_id: .check_suite.id, app_id: .app.id}' "$base/commits/$HEAD/check-runs"
   one status '{state, total: .total_count, listed: (.statuses | length), sha}' "$base/commits/$HEAD/status?per_page=100"
   # The gate's own check runs are told apart by NUMERIC workflow id, never by display name.
   if [[ ${GITHUB_RUN_ID:-} =~ ^[0-9]+$ ]]; then
@@ -73,16 +73,25 @@ jq --arg login "$(jq -r .codex.login "$CFG")" \
    '[.[] | select(.login == $login) | .body = .body[0:4000]]' "$tmp/all_comments.json" > "$tmp/issue_comments.json"
 
 mode=${HANDOFF_MODE:-simulate}; [[ $mode == label ]] || mode=simulate
+# Real mode only: is the activation lock CONFIRMED open on the default branch? Decided here, before any attempt is recorded,
+# so a closed or unreadable lock can never leave a false in-flight attempt. Anything but a boolean true reads as closed.
+lock=null
+if [[ $mode == label ]]; then
+  lock=false
+  if [[ ${DEFAULT_BRANCH:-} =~ ^[A-Za-z0-9._/-]{1,100}$ && ! ${DEFAULT_BRANCH:-} =~ \.\. ]] &&
+     "$GH" api -H 'Accept: application/vnd.github.raw+json' "$base/contents/bridge-gate/config.json?ref=$DEFAULT_BRANCH" 2>/dev/null |
+       jq -e '.real_handoff_enabled == true' >/dev/null 2>&1; then lock=true; fi
+fi
 jq -n \
   --argjson now "${NOW:-$(date +%s)}" --arg name "${EVENT_NAME:-}" --arg key "${EVENT_KEY:-}" \
-  --argjson kill "$([[ ${KILL_SWITCH:-} == true ]] && echo true || echo false)" --arg mode "$mode" \
+  --argjson kill "$([[ ${KILL_SWITCH:-} == true ]] && echo true || echo false)" --arg mode "$mode" --argjson lock "$lock" \
   --argjson wid "${WID:-0}" --argjson state "$state" --argjson sid "$state_id" \
   --argjson inc "$(printf '%s\n' ${inc[@]+"${inc[@]}"} | jq -R . | jq -s 'map(select(length > 0)) | unique')" \
   --slurpfile pr "$tmp/pr.json" --slurpfile reviews "$tmp/reviews.json" --slurpfile rc "$tmp/review_comments.json" \
   --slurpfile ic "$tmp/issue_comments.json" --slurpfile cr "$tmp/check_runs.json" --slurpfile st "$tmp/status.json" \
   --slurpfile runs "$tmp/runs.json" --slurpfile hc "$tmp/head_commit.json" '
   {now: $now, event: {name: $name, key: (if $key == "" then null else $key end)}, incomplete: $inc,
-   kill_switch: $kill, handoff_mode: $mode, pr: $pr[0], reviews: $reviews[0], review_comments: $rc[0],
+   kill_switch: $kill, handoff_mode: $mode, handoff_lock_open: $lock, pr: $pr[0], reviews: $reviews[0], review_comments: $rc[0],
    issue_comments: $ic[0], check_runs: $cr[0], combined_status: $st[0],
    head_commit: $hc[0], own_suite_ids: [$runs[0][] | select(.workflow_id == $wid) | .suite],
    state: $state, state_comment_id: $sid}'

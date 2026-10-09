@@ -16,7 +16,7 @@ decides, a small guard re-checks the head, and one PR comment holds the state.
 | `SECURITY.md` | Pre-activation security review: findings, verdict, what blocks real activation |
 | `gate.jq` | **All decisions.** Pure: facts + `config.json` in, decision + next state out. No clock, no network |
 | `render.jq` | Comment text, built only from decision codes, ids and counts (never from GitHub text) |
-| `config.json` | Max attempts (3), lease (90 min), `require_ci`, the verified Codex identity, label names |
+| `config.json` | Max attempts (3), lease (90 min), `require_ci`, the designated CI check (`ci_check`: name `unit-tests` + GitHub Actions app id 15368), the verified Codex identity, label names |
 | `ROUTINE.md`, `routine-prompt.md` | Exact steps and prompt to enable the real Claude Routine later. **Not active** |
 
 ## Decisions
@@ -25,8 +25,8 @@ decides, a small guard re-checks the head, and one PR comment holds the state.
 | --- | --- | --- | --- |
 | `WAIT` | Nothing to do yet (draft, awaiting Codex, CI pending, fix in flight, …) | no | no |
 | `NEEDS_FIX` | Current-head Codex findings or failing CI, attempts left, nothing in flight | **yes (one)** | no |
-| `READY` | Current-head Codex review is clean **and** independent CI passes. Advisory: a person merges | no | yes |
-| `BLOCKED` | Anything doubtful: API error, malformed evidence, fork/closed PR, human "changes requested", unclassified Codex review, handoff timeout | no | yes (not for evidence errors) |
+| `READY` | Current-head Codex review is clean **and** the designated `unit-tests` check (from the GitHub Actions app) succeeded. No other check and no legacy commit status can stand in for it; a failing or pending check of any kind still blocks. Advisory: a person merges | no | yes |
+| `BLOCKED` | Anything doubtful: API error, malformed evidence, fork/closed PR, human "changes requested", unclassified Codex review, handoff timeout, or `HANDOFF_LOCKED` (real mode on but the default-branch lock is not confirmed open: no attempt is recorded) | no | yes (not for evidence errors) |
 | `MAX_ATTEMPTS` | Three attempts used and the current head still has findings or failing CI | no | yes |
 | `USAGE_STOP` | Repo variable `BRIDGE_KILL_SWITCH=true` or PR label `bridge:usage-stop` | no | yes |
 

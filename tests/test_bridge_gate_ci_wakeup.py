@@ -23,7 +23,7 @@ CODEX_EVENT = {"EVENT_NAME": "issue_comment", "COMMENT_ID": "9000", "COMMENT_UPD
 
 def set_ci(fx, status, conclusion=None):
     fx.put("commits_SHA_check-runs", {"total_count": 1, "check_runs": [
-        {"name": "unit-tests", "status": status, "conclusion": conclusion, "check_suite": {"id": 100}}]})
+        {"name": "unit-tests", "status": status, "conclusion": conclusion, "check_suite": {"id": 100}, "app": {"id": 15368}}]})
 
 
 def world(head=HEAD, status="completed", conclusion="success", state=None, codex_clean=True, other_commit=None):

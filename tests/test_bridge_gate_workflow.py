@@ -198,7 +198,7 @@ def findings_fixture():
     fx.put("pulls_7_reviews", [{"id": 101, "user": user(CODEX), "state": "COMMENTED", "commit_id": HEAD_DEFAULT}])
     fx.put("pulls_7_comments", [{"pull_request_review_id": 101, "in_reply_to_id": None}])
     fx.put("commits_SHA_check-runs", {"total_count": 1, "check_runs": [
-        {"name": "unit-tests", "status": "completed", "conclusion": "success", "check_suite": {"id": 100}}]})
+        {"name": "unit-tests", "status": "completed", "conclusion": "success", "check_suite": {"id": 100}, "app": {"id": 15368}}]})
     return fx
 
 
@@ -265,7 +265,7 @@ class ExecutedGlueTests(unittest.TestCase):
         fx = Fixture(HEAD_DEFAULT)
         fx.put("issues_7_comments", [{"id": 9000, "user": user(CODEX), "body": summary(HEAD_DEFAULT)["body"]}])
         fx.put("commits_SHA_check-runs", {"total_count": 1, "check_runs": [
-            {"name": "unit-tests", "status": "completed", "conclusion": "success", "check_suite": {"id": 100}}]})
+            {"name": "unit-tests", "status": "completed", "conclusion": "success", "check_suite": {"id": 100}, "app": {"id": 15368}}]})
         r = Runner(fx)
         out = r.run()
         self.assertEqual(r.decision()["decision"], "READY")
@@ -341,7 +341,7 @@ class ExecutedGlueTests(unittest.TestCase):
     def test_an_unreadable_head_refuses_too(self):
         fx = findings_fixture()
         r = Runner(fx, HANDOFF_MODE="label")
-        r.run(steps=[COLLECT, DECIDE])
+        r.run(steps=[COLLECT, DECIDE], HANDOFF_MODE="")   # decided in simulate mode so a handoff IS due; the guard is mode-independent
         fx.fail("pulls_7")
         out = r.run(steps=[GUARD])
         self.assertNotEqual(out[GUARD].returncode, 0)
@@ -361,7 +361,9 @@ class ExecutedGlueTests(unittest.TestCase):
         # Security preflight: the repository variable alone must never enable the real handoff.
         fx = findings_fixture()
         r = Runner(fx, HANDOFF_MODE="label")  # lock closed (as committed)
-        r.run(steps=[COLLECT, DECIDE])
+        # Defence in depth: even if a NEEDS_FIX decision reached the real step (decided in simulate mode here), the step's own
+        # lock check stops it. In real mode the decision itself is already BLOCKED / HANDOFF_LOCKED (tests/test_bridge_gate_codex_findings.py).
+        r.run(steps=[COLLECT, DECIDE], HANDOFF_MODE="")
         self.assertEqual(r.decision()["decision"], "NEEDS_FIX")  # a handoff IS due, so only the lock stops it
         out = r.run(steps=[REAL], HANDOFF_MODE="label")
         self.assertEqual(out[REAL].returncode, 0)

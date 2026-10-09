@@ -44,8 +44,8 @@ class LockTests(unittest.TestCase):
         fx = findings_fixture()
         r = Runner(fx, HANDOFF_MODE="label")
         set_lock(fx, lock)
-        r.run(steps=[COLLECT, DECIDE])
-        self.assertEqual(r.decision()["decision"], "NEEDS_FIX")  # a handoff is due; only the lock may stop it
+        r.run(steps=[COLLECT, DECIDE], HANDOFF_MODE="")  # decided in simulate mode so a handoff IS due; the real step must stop it on its own
+        self.assertEqual(r.decision()["decision"], "NEEDS_FIX")
         return fx, r, r.run(steps=[REAL], HANDOFF_MODE="label")
 
     def test_every_value_but_exactly_true_on_the_default_branch_keeps_it_locked(self):
@@ -53,7 +53,8 @@ class LockTests(unittest.TestCase):
             fx = findings_fixture()
             r = Runner(fx, HANDOFF_MODE="label")
             set_lock(fx, lock)
-            r.run(steps=[COLLECT, DECIDE])
+            r.run(steps=[COLLECT, DECIDE], HANDOFF_MODE="")   # a handoff IS due (simulate-mode decision)
+            self.assertEqual(r.decision()["decision"], "NEEDS_FIX", lock)
             out = r.run(steps=[REAL], HANDOFF_MODE="label")
             self.assertEqual(out[REAL].returncode, 0, (lock, out[REAL].stderr))
             self.assertIn("locked off", out[REAL].stdout, lock)
@@ -62,7 +63,7 @@ class LockTests(unittest.TestCase):
     def test_a_pr_branch_that_opens_its_own_copy_of_the_lock_changes_nothing(self):
         fx = findings_fixture()                                  # default branch: locked (Runner default)
         r = Runner(fx, HANDOFF_MODE="label")
-        r.run(steps=[COLLECT, DECIDE])
+        r.run(steps=[COLLECT, DECIDE], HANDOFF_MODE="")
         cfg = json.loads((g.GATE / "config.json").read_text())
         cfg["real_handoff_enabled"] = True                       # what a PR branch could commit
         own = r.work / "own-config.json"; own.write_text(json.dumps(cfg))

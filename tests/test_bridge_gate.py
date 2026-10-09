@@ -83,13 +83,14 @@ class DecisionTableTests(unittest.TestCase):
         cfg = copy.deepcopy(g.CONFIG); cfg["require_ci"] = False
         self.assertEqual(run_gate(clean_facts(check_runs=[]), cfg)["decision"], "READY")
 
-    def test_green_commit_status_counts_as_ci(self):
+    def test_a_green_commit_status_alone_does_not_count_as_ci(self):
+        # Codex finding on PR #1: only the designated check (name + GitHub Actions app) can satisfy require_ci.
         d = run_gate(clean_facts(check_runs=[], combined_status={"state": "success", "total": 2, "listed": 2, "sha": sha(1)}))
-        self.assertEqual(d["decision"], "READY")
+        self.assertEqual((d["decision"], d["reason"]), ("WAIT", "CI_MISSING"))
 
     def test_codex_not_finished_is_not_ready(self):
         h = sha(1)
-        self.assertEqual(run_gate(facts(h, issue_comments=[summary(h, completed=False)], check_runs=[check("t")]))["reason"],
+        self.assertEqual(run_gate(facts(h, issue_comments=[summary(h, completed=False)], check_runs=[check("unit-tests")]))["reason"],
                          "CODEX_IN_PROGRESS")
 
     def test_absence_of_findings_is_not_a_pass(self):
@@ -130,7 +131,7 @@ class DecisionTableTests(unittest.TestCase):
 
     def test_codex_review_we_cannot_classify_blocks_instead_of_passing(self):
         h = sha(1)
-        d = run_gate(facts(h, reviews=[review(101, h)], issue_comments=[summary(h)], check_runs=[check("t")]))
+        d = run_gate(facts(h, reviews=[review(101, h)], issue_comments=[summary(h)], check_runs=[check("unit-tests")]))
         self.assertEqual((d["decision"], d["reason"], d["handoff"]), ("BLOCKED", "CODEX_REVIEW_UNCLASSIFIED", None))
         # a reply is not a finding either
         d = run_gate(facts(h, reviews=[review(101, h)], review_comments=[inline(101, reply_to=55)]))
@@ -154,20 +155,20 @@ class DecisionTableTests(unittest.TestCase):
 
 class StaleReviewTests(unittest.TestCase):
     def test_findings_on_an_old_head_are_ignored(self):
-        f = facts(sha(2), reviews=[review(101, sha(1))], review_comments=[inline(101)], check_runs=[check("t")])
+        f = facts(sha(2), reviews=[review(101, sha(1))], review_comments=[inline(101)], check_runs=[check("unit-tests")])
         d = run_gate(f)
         self.assertEqual((d["decision"], d["reason"], d["handoff"]), ("WAIT", "AWAITING_CODEX_REVIEW", None))
         self.assertEqual((d["evidence"]["codex_stale"], d["evidence"]["codex_findings"]), (1, 0))
 
     def test_a_clean_summary_for_an_old_head_cannot_make_a_new_head_ready(self):
-        f = facts(sha(2), issue_comments=[summary(sha(1))], check_runs=[check("t")])
+        f = facts(sha(2), issue_comments=[summary(sha(1))], check_runs=[check("unit-tests")])
         self.assertEqual(run_gate(f)["decision"], "WAIT")
-        f = facts(sha(2), issue_comments=[summary(sha(2), other_commit=sha(1))], check_runs=[check("t")])
+        f = facts(sha(2), issue_comments=[summary(sha(2), other_commit=sha(1))], check_runs=[check("unit-tests")])
         self.assertEqual(run_gate(f)["decision"], "READY")  # the row for the CURRENT head decides
 
     def test_stale_findings_do_not_block_a_clean_new_head(self):
         h = sha(2)
-        f = facts(h, reviews=[review(101, sha(1))], review_comments=[inline(101)], issue_comments=[summary(h)], check_runs=[check("t")])
+        f = facts(h, reviews=[review(101, sha(1))], review_comments=[inline(101)], issue_comments=[summary(h)], check_runs=[check("unit-tests")])
         self.assertEqual(run_gate(f)["decision"], "READY")
 
     def test_a_late_event_for_an_old_review_is_just_a_reevaluation(self):
@@ -195,7 +196,7 @@ class IdentityTests(unittest.TestCase):
 
     def test_lookalike_summary_cannot_make_a_pr_ready(self):
         h = sha(1)
-        self.assertEqual(run_gate(facts(h, issue_comments=[summary(h, who=LOOKALIKE)], check_runs=[check("t")]))["decision"], "WAIT")
+        self.assertEqual(run_gate(facts(h, issue_comments=[summary(h, who=LOOKALIKE)], check_runs=[check("unit-tests")]))["decision"], "WAIT")
 
     def test_a_lookalike_that_requests_changes_blocks_like_any_human(self):
         h = sha(1)
@@ -318,7 +319,7 @@ class OverlapRegressionTests(unittest.TestCase):
 
     def test_simulated_loop_with_a_foreign_push_never_overlaps(self):
         s = g.Simulator()
-        s.facts = facts(reviews=[review(101, sha(1))], review_comments=[inline(101)], check_runs=[check("t")])
+        s.facts = facts(reviews=[review(101, sha(1))], review_comments=[inline(101)], check_runs=[check("unit-tests")])
         s.event("review", "review:101")
         s.push(2, foreign=True)
         s.facts["reviews"].append(review(102, sha(2))); s.facts["review_comments"].append(inline(102))
@@ -361,7 +362,7 @@ class AttemptLimitTests(unittest.TestCase):
 
     def test_full_loop_is_capped_at_three_handoffs(self):
         s = g.Simulator()
-        s.event("review", "review:1", lambda f: f.update(reviews=[review(1, sha(1))], review_comments=[inline(1)], check_runs=[check("t")]))
+        s.event("review", "review:1", lambda f: f.update(reviews=[review(1, sha(1))], review_comments=[inline(1)], check_runs=[check("unit-tests")]))
         for n in (2, 3, 4):
             s.push(n)
             s.event("synchronize", "head:%d" % n)

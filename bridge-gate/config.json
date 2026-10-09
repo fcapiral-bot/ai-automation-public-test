@@ -2,6 +2,7 @@
   "max_attempts": 3,
   "lease_minutes": 90,
   "require_ci": true,
+  "ci_check": {"name": "unit-tests", "app_id": 15368},
   "codex": {"login": "chatgpt-codex-connector[bot]", "id": 199175422, "type": "Bot"},
   "summary_marker": "<!-- codex-pull-request-review-summary -->",
   "labels": {"needs_fix": "bridge:needs-fix", "usage_stop": "bridge:usage-stop"},

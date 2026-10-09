@@ -87,7 +87,7 @@ class HappyPathTests(unittest.TestCase):
         fx.put("pulls_7_reviews", [{"id": 101, "user": user(CODEX), "state": "COMMENTED", "commit_id": HEAD, "body": "x"}])
         fx.put("pulls_7_comments", [{"id": 1, "pull_request_review_id": 101, "in_reply_to_id": None, "body": "finding"}])
         fx.put("commits_SHA_check-runs", {"total_count": 1, "check_runs": [
-            {"name": "unit-tests", "status": "completed", "conclusion": "success", "check_suite": {"id": 100}, "app": {"slug": "x"}}]})
+            {"name": "unit-tests", "status": "completed", "conclusion": "success", "check_suite": {"id": 100}, "app": {"id": 15368, "slug": "github-actions"}}]})
         facts = fx.collect(KILL_SWITCH="", HANDOFF_MODE="")
         self.assertEqual(facts["incomplete"], [])
         self.assertEqual(facts["pr"], {"number": 7, "state": "open", "merged": False, "draft": False, "head_sha": HEAD,
@@ -95,7 +95,7 @@ class HappyPathTests(unittest.TestCase):
         self.assertEqual(facts["reviews"], [{"id": 101, "login": CODEX["login"], "uid": CODEX["uid"], "type": "Bot",
                                              "state": "COMMENTED", "commit_id": HEAD}])
         self.assertEqual(facts["review_comments"], [{"review_id": 101, "in_reply_to": None}])
-        self.assertEqual(facts["check_runs"], [{"name": "unit-tests", "status": "completed", "conclusion": "success", "suite_id": 100}])
+        self.assertEqual(facts["check_runs"], [{"name": "unit-tests", "status": "completed", "conclusion": "success", "suite_id": 100, "app_id": 15368}])
         self.assertEqual(facts["combined_status"], {"state": "pending", "total": 0, "listed": 0, "sha": HEAD})
         self.assertEqual(facts["head_commit"], {"subject": "work in progress", "parents": []})
         self.assertEqual((facts["event"], facts["kill_switch"], facts["handoff_mode"], facts["state"]),

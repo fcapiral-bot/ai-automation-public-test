@@ -19,6 +19,7 @@ CODEX = {"login": CONFIG["codex"]["login"], "uid": CONFIG["codex"]["id"], "type"
 HUMAN = {"login": "octocat", "uid": 583231, "type": "User"}
 LOOKALIKE = {"login": CODEX["login"], "uid": 999, "type": "Bot"}  # right name, wrong id
 NOW = 1_800_000_000
+GITHUB_ACTIONS_APP_ID = 15368   # the app that produces the designated check (and the ruleset's integration_id)
 
 
 def sha(n):
@@ -74,8 +75,10 @@ def summary(head, who=CODEX, completed=True, other_commit=None):
     return {"id": 9000, "login": who["login"], "uid": who["uid"], "type": who["type"], "body": body}
 
 
-def check(name, status="completed", conclusion="success", suite=100):
-    return {"name": name, "status": status, "conclusion": conclusion, "suite_id": suite}
+def check(name, status="completed", conclusion="success", suite=100, app_id=None):
+    """A normalized check run as collect.sh emits it. `app_id` defaults to the designated GitHub Actions app."""
+    return {"name": name, "status": status, "conclusion": conclusion, "suite_id": suite,
+            "app_id": GITHUB_ACTIONS_APP_ID if app_id is None else app_id}
 
 
 class Simulator:

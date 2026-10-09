@@ -68,9 +68,13 @@ $facts[0] as $f | $cfg[0] as $c
   def ci_pend:
     ([ci_runs[] | select(.status != "completed")] | length)
     + (if $f.combined_status.state == "pending" and $f.combined_status.total > 0 then 1 else 0 end);
+  # READY needs the DESIGNATED check (name and producing app from config) to have succeeded. Unrelated passing checks and
+  # legacy commit statuses never count; failing or pending checks of any kind still do (ci_fail, ci_pend).
   def ci_ok:
-    ([ci_runs[] | select(.status == "completed" and .conclusion == "success")] | length)
-    + (if $f.combined_status.state == "success" then $f.combined_status.total else 0 end);
+    [ci_runs[] | select(.name == $c.ci_check.name and .app_id == $c.ci_check.app_id
+                        and .status == "completed" and .conclusion == "success")] | length;
+  # Real mode with an activation lock that is not CONFIRMED open: no handoff can start, so none may be recorded.
+  def lock_blocked: $f.handoff_mode == "label" and $f.handoff_lock_open != true;
 
   # ---- persistent per-PR / per-head attempt state ----
   # An in-flight attempt is finished ONLY by evidence that its own session pushed: the current head is a single
@@ -109,6 +113,7 @@ $facts[0] as $f | $cfg[0] as $c
      elif $nu > 0 then {decision: "BLOCKED", reason: "CODEX_REVIEW_UNCLASSIFIED"}
      elif $nf > 0 or ci_fail > 0 then
        (if ($rec | length) >= $c.max_attempts then {decision: "MAX_ATTEMPTS", reason: "ATTEMPT_LIMIT"}
+        elif lock_blocked then {decision: "BLOCKED", reason: "HANDOFF_LOCKED"}
         else {decision: "NEEDS_FIX", handoff: true,
               reason: ([(if $nf > 0 then "CODEX_FINDINGS" else empty end), (if ci_fail > 0 then "CI_FAILING" else empty end)] | join("+"))} end)
      elif ci_pend > 0 then {decision: "WAIT", reason: "CI_PENDING"}
