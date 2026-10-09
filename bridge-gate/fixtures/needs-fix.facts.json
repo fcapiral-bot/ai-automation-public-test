@@ -1,0 +1,58 @@
+{
+  "_fixture": "TEST FIXTURE: synthetic facts for a dry run. Never produced by collect.sh; rejected by gate.jq unless the test-run token is passed. Not a real GitHub object; nothing here is, or impersonates, a real Codex review.",
+  "now": 1800000000,
+  "event": {
+    "name": "pull_request_review",
+    "key": "review:FIXTURE-1"
+  },
+  "incomplete": [],
+  "kill_switch": false,
+  "handoff_mode": "simulate",
+  "pr": {
+    "number": 999999,
+    "state": "open",
+    "merged": false,
+    "draft": false,
+    "head_sha": "0123456789abcdef0123456789abcdef01234567",
+    "head_repo": "o/r",
+    "base_repo": "o/r",
+    "labels": []
+  },
+  "reviews": [
+    {
+      "id": 1,
+      "login": "chatgpt-codex-connector[bot]",
+      "uid": 199175422,
+      "type": "Bot",
+      "state": "COMMENTED",
+      "commit_id": "0123456789abcdef0123456789abcdef01234567"
+    }
+  ],
+  "review_comments": [
+    {
+      "review_id": 1,
+      "in_reply_to": null
+    }
+  ],
+  "issue_comments": [],
+  "check_runs": [
+    {
+      "name": "unit-tests",
+      "status": "completed",
+      "conclusion": "success",
+      "suite_id": 100
+    }
+  ],
+  "own_suite_ids": [],
+  "head_commit": {
+    "subject": "work in progress",
+    "parents": []
+  },
+  "combined_status": {
+    "state": "pending",
+    "total": 0,
+    "listed": 0,
+    "sha": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "state": null
+}

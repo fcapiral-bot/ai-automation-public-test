@@ -1,0 +1,30 @@
+# CI: runs the repository's Python unit tests. Nothing else.
+#
+# Safe for untrusted pull-request code by construction: the `pull_request` event only (never
+# `pull_request_target` or `workflow_run`), a read-only token (`contents: read`), no secrets, no
+# GITHUB_TOKEN exposed to the test step, no credentials left in the checkout, and no network
+# services, AI or paid APIs. Fork PRs run with GitHub's own read-only token and no secrets.
+# The job name `unit-tests` is the check name bridge-gate counts for `require_ci`.
+name: ci
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run unit tests
+        run: python3 -W error -m unittest discover -s tests -t .
