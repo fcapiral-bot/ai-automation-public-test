@@ -128,8 +128,13 @@ python3 -W error -m unittest discover -s tests -t .    # whole suite (needs jq)
 ## Status
 
 Prototype. Simulated handoff only. Migrated from the private test repository (source commit `11c8fbb` of its
-`proto/bridge-gate` branch) into this protected public test repository. Nothing here starts Claude or Codex, and the real
+`proto/bridge-gate` branch) into this public test repository. Nothing here starts Claude or Codex, and the real
 handoff stays locked (`real_handoff_enabled: false`, no `BRIDGE_HANDOFF_MODE`).
+
+Merge protection: `main` requires a pull request, a passing `unit-tests` check and resolved review conversations. It does **not**
+require an approving review (required approvals = 0, a deliberate owner exception for this one-person test repository), and zero
+approvals does not prevent an authorized repository writer from merging. That is an unresolved security blocker for unattended AI
+execution; see `SECURITY.md` S10.
 
 Migration note: the gate listens to `pull_request` `synchronize`, `reopened` and `ready_for_review`, not `opened`, so a
 brand-new PR is first evaluated when its next commit is pushed. This documentation-only commit is that first push.

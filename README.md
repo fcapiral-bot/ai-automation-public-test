@@ -1,2 +1,2 @@
 # ai-automation-public-test
-Public test environment for developing and validating a secure, automated Claude Code–Codex workflow using GitHub Actions, with usage safeguards and human approval before merging.
+Public test environment for developing and validating a secure, automated Claude Code–Codex workflow using GitHub Actions, with usage safeguards. Changes to `main` go through a pull request with a passing `unit-tests` check and resolved review conversations, and the owner decides each merge personally. GitHub does **not** currently require an approving review in this one-person repository (see `bridge-gate/SECURITY.md`, S10).

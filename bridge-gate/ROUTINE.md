@@ -21,15 +21,18 @@ and sitting directly on the attempt's head, is what tells the gate the attempt i
 3. **Codex is enabled for this repository** with purchased credits disabled, and you know how a new commit
    gets re-reviewed (see section 6). Automatic review and re-review on every push were verified in the earlier private test
 repository; they have not been tested here, and Codex is not confirmed to be enabled for this repository.
-4. **A branch ruleset on `main`** requires a human approving review, blocks force-pushes and deletions, has
-   no bypass for the account the routine acts as, and protects `.github/**` and `bridge-gate/**` (rule or
-   CODEOWNERS), so neither the routine nor an Action can rewrite the gate or merge. Auto-merge stays off and
-   "Allow GitHub Actions to create and approve pull requests" stays off. **Status here:** the ruleset
-   "Protect main – Human Approval" is active with 1 required approval, no bypass actors, and `deletion`,
-   `non_fast_forward` and `pull_request` rules; a direct push to `main` was rejected by GitHub (GH013, "Changes must
-   be made through a pull request"). **Still missing:** path protection for `.github/**` and `bridge-gate/**`
-   (needs CODEOWNERS plus a code-owner review rule, or a path rule), required status checks, and a second human
-   account to approve (an author cannot approve their own PR). See `SECURITY.md` S4.
+4. **A branch ruleset on `main` that GitHub enforces for a human decision.** Intended: an approving review from a human
+   other than the author, no bypass for the account the routine acts as, protection of `.github/**` and `bridge-gate/**`
+   (rule or CODEOWNERS), and auto-merge off, so neither the routine nor an Action can rewrite the gate or merge.
+   "Allow GitHub Actions to create and approve pull requests" stays off. **Status here (verified 2026-10-09):** the ruleset
+   "Protect main – Human Approval" is active with no bypass actors. It requires a pull request, a passing `unit-tests`
+   check, resolved review conversations, and forbids force-pushes and deletion; a direct push to `main` was rejected by
+   GitHub (GH013, "Changes must be made through a pull request"). **It requires 0 approving reviews.** The owner lowered it
+   from 1 on purpose because this disposable repository has one human, and merges the simulated-only prototype personally:
+   a conscious exception, **not** GitHub-enforced human approval. Zero approvals does not prevent an authorized repository
+   writer from merging. **This is an unresolved security blocker for unattended AI execution (`SECURITY.md` S10):** do not
+   create a Routine or unlock the handoff until at least 1 approving review from a non-author human is required (this needs
+   a second human account), path protection exists, and the automation's identity can neither merge nor edit the ruleset.
 5. You accept that routines belong to **your** claude.ai account: commits and comments appear as you, and
    runs draw on your seat's usage.
 

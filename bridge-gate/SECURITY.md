@@ -7,8 +7,22 @@ checks of the live repository. Nothing was dispatched, enabled or merged.
 ## Verdict
 
 * **Dry-run activation (simulated handoff only): PASS**, under the conditions below.
-* **Real label handoff / Claude Routine: BLOCKED** until the remaining S4 gaps and S5 are resolved (settings issues,
-  not code defects), plus the unknown Claude extra-usage state.
+* **Real label handoff / Claude Routine / any unattended AI execution: BLOCKED** until S10 (zero required approvals), the remaining S4 gaps and S5 are
+  resolved (settings issues, not code defects), plus the unknown Claude extra-usage state.
+* **Merging this simulated-only prototype:** an owner exception. The owner inspects and merges it personally; GitHub does not enforce a review (S10).
+
+## What the `main` ruleset enforces today
+
+Ruleset "Protect main – Human Approval" (the name is historical), verified live on 2026-10-09; no bypass actors.
+
+| GitHub enforces | GitHub does **not** enforce |
+| --- | --- |
+| Every change to `main` goes through a pull request (no direct pushes; verified: GH013) | An approving review: **required approvals = 0**, deliberately lowered from 1 by the owner |
+| The `unit-tests` check (GitHub Actions app) passes | That the required check is trustworthy: a PR-controlled workflow can produce it |
+| Review conversations are resolved | Who may merge: any authorized writer, including the PR author, can merge a PR that meets these conditions |
+| No force-push and no deletion of `main` | Path protection for `.github/**` and `bridge-gate/**`, code-owner review, or stopping an admin from editing the ruleset |
+
+Zero required approvals does not prevent an authorized repository writer from merging. See S10.
 
 Dry-run conditions: the migration PR stays a draft and unmerged; `BRIDGE_HANDOFF_MODE` and `BRIDGE_KILL_SWITCH` stay unset;
 Settings → Actions → General has "Allow GitHub Actions to create and approve pull requests" **off** (not
@@ -35,12 +49,13 @@ verifiable from here: the API path is blocked for this session).
 | S1 | Medium | **Stale-head handoff.** The head could move between evaluation and the handoff, so a label (and a Claude session) could target a commit already gone. Reproduced: label issued for `0000001` after the head moved to `0000002`. | **Fixed.** `guard.sh` re-reads the head before the state write and again before the label, and refuses if it moved or cannot be read. Regression tests, mutation-checked. |
 | S2 | Medium | **Overlapping sessions.** Any new head ended the in-flight attempt, so after a person's push or a rebase a second session could start beside a still-running first one. Reproduced in the simulator. | **Fixed.** An attempt now ends only when the head is one commit directly on the attempt's head titled exactly `Address review findings (bridge attempt N/3)`. Anything else keeps it in flight until the lease expires, then `BLOCKED / HANDOFF_TIMEOUT` and the label is released. |
 | S3 | Medium | **State reset by deletion.** Deleting the bot's state comment resets a PR's attempt counter. Needs repo write access. | Open, by design. Hardening idea: floor the count with the number of `Address review findings (bridge attempt …)` commits in the PR. |
-| S4 | **Medium for real activation** (was High in the private repo) | **Server-side guardrails are now partly in place.** The ruleset "Protect main – Human Approval" (active, no bypass, 1 required approval, no direct pushes, force-pushes or deletion) is verified: a direct push to `main` was rejected by GitHub (GH013). **Remaining gaps:** no path protection for `.github/**` and `bridge-gate/**`, no required status checks, no code-owner review, and the ruleset itself is editable by a repo admin. A same-repo PR branch can still change the workflow YAML and run it with the token (comments and labels, and pushes to non-`main` branches), but it cannot reach `main` without a human approval. A Routine acting as an admin identity is also stopped from pushing to `main`. | **Partly mitigated.** Add path protection and required checks before real activation. |
+| S4 | **Medium for real activation** (was High in the private repo) | **Server-side guardrails are partly in place.** The `main` ruleset "Protect main – Human Approval" (active, no bypass actors) requires a pull request, a passing `unit-tests` check, resolved review conversations, and forbids force-pushes and deletion; a direct push to `main` was rejected by GitHub (GH013). **It does not require an approving review (S10).** **Remaining gaps:** no path protection for `.github/**` and `bridge-gate/**`, no code-owner review, the `unit-tests` check can be produced by a PR-controlled workflow, and the ruleset itself is editable by a repo admin (the credential an automation would use in this repository has admin rights). A same-repo PR branch can change the workflow YAML and run it with the token (comments and labels, and pushes to non-`main` branches); because no approval is required, a same-repo writer can also merge a PR that passes the checks. A Routine acting as an admin identity is stopped from pushing directly to `main`, but not from merging a PR. | **Partly mitigated.** Add path protection before real activation, and see S10. |
 | S5 | Medium | **Approval setting unverified.** The gate token has `pull-requests: write`; if "Allow GitHub Actions to create and approve pull requests" is on, a modified workflow could approve a PR. The gate itself never approves. | Open. Check the setting; keep it off. |
 | S6 | Low | **Gate runs can be displaced.** A pending gate run for a PR can be replaced by a later run in the same concurrency group, including one started by an unrelated comment that then skips. The event is lost until the next one; the failure direction is safe (no handoff). From GitHub's documented semantics, not reproducible offline. | Open. Give ignored comment events their own group when activating. |
-| S7 | Low | **7-character commit match.** Codex's summary row carries a 7-character commit prefix, so a writer could grind a head whose prefix matches an old clean row and get `READY` (advisory; a person still approves and merges). | Open, accepted. |
+| S7 | Low | **7-character commit match.** Codex's summary row carries a 7-character commit prefix, so a writer could grind a head whose prefix matches an old clean row and get `READY` (advisory; a person still reviews and merges). | Open, accepted. |
 | S9 | Medium | **Real handoff gated only by a repository variable.** `BRIDGE_HANDOFF_MODE=label` alone would have enabled the label step, and a variable can be set by mistake or by anyone with admin. | **Fixed.** The real step also requires `real_handoff_enabled: true` in `bridge-gate/config.json` **as read from the default branch over the API** (default `false`; missing, unreadable or malformed = locked), so enabling it takes a merged code change plus the variable, and a PR branch editing its own copy of the file cannot open it. Pinned by tests. Residual: a same-repo branch that also edits the workflow YAML can still remove the check (S4). |
 | S8 | Info | `actions/checkout@v4` is tag-pinned (GitHub-owned); `GH_TOKEN` is visible to every step (all steps are repo code). | Accepted. |
+| S10 | **High for unattended AI execution** | **Zero required approvals.** GitHub does not enforce a human review on `main`. The owner lowered the requirement from 1 to 0 on purpose because this disposable public test repository has one human, and merges the simulated-only prototype personally. That is a conscious exception, **not** equivalent to GitHub-enforced approval. Zero required approvals does not prevent an authorized repository writer (the PR author, an admin credential, or any workflow or credential holding write permissions) from merging a PR that has a passing `unit-tests` check and resolved conversations. Nothing but instructions would keep an unattended Claude session, or a Claude-edited workflow, from merging its own PR. | **Open. Unresolved security blocker for any unattended AI execution** (Routine, real handoff, Claude-driven corrections). Not a blocker for merging the simulated-only prototype under the owner exception. Before unattended execution: require at least 1 approving review from a human other than the author (needs a second human account), or an equivalent control; protect `.github/**` and `bridge-gate/**`; and make sure the automation's identity can neither merge nor edit the ruleset. |
 
 Checked and clean: no `${{ }}` in any script; no `GITHUB_ENV`/`GITHUB_OUTPUT`/`set-output`; hostile event values
 (`$(...)`, backticks, `;`, quotes) in review id, head sha, comment id/time and PR number executed nothing; attacker text
@@ -51,15 +66,15 @@ collector, and the only writes are the two PR-comment endpoints and, when enable
 
 | Condition | Result |
 | --- | --- |
-| Automation cannot modify `main` or a production app | **Actions side: established.** `contents: read`; the only writes are PR comments and (locked) one label; pinned by tests. **Routine side: BLOCKED**, because only the Routine's prompt keeps it off `main` (S4: no rulesets on this plan). |
+| Automation cannot modify `main` or a production app | **Actions side: established.** `contents: read`; the only writes are PR comments and (locked) one label; pinned by tests. **Routine side: BLOCKED**, because the ruleset forbids direct pushes but, with zero required approvals, does not stop a writer or credential from merging a PR; only the Routine's prompt would (S4, S10). |
 | No real AI execution | **Established.** No workflow references Claude, a Routine, an API key or a token; no Routine exists; the label step is locked; Codex is only an identity filter. |
 | No duplicate handoff for one attempt | **Established in the gate** (one attempt per PR + head, write-ahead state, lease, per-PR concurrency). Residual S6. Whether a bot-applied label fires a Routine once is **untested**. |
 | Stale commits cannot trigger corrections | **Established in the gate** (guard before the state write and before the label) and **in the prompt** (re-fetch before pushing; prompt-level only). |
 | Three attempts maximum | **Established in `gate.jq`.** Open: S3, a repo writer can reset the counter by deleting the state comment. |
 | Any error stops safely | **Established for the gate** (collector, guard and state-write failures end with no label). Routine failures end in `BLOCKED / HANDOFF_TIMEOUT` after the lease. |
 | Variables alone cannot activate it | **Established.** The lock is read from the **default branch** over the API; missing, unreadable, malformed or non-boolean-true = locked. Pinned by tests. |
-| Untrusted PR branches cannot run with privileged permissions | **Forks: established** (read-only token, `FORK_PR`). **Same-repo branch writers: not fully established.** They control the workflow YAML for `pull_request` events (S4), but `main` is protected by the ruleset, so they cannot merge or push there without a human approval. Editing `config.json` on a branch no longer opens the lock. |
+| Untrusted PR branches cannot run with privileged permissions | **Forks: established** (read-only token, `FORK_PR`). **Same-repo branch writers: not fully established.** They control the workflow YAML for `pull_request` events (S4), and `main` rejects direct pushes, but because no approval is required (S10) a same-repo writer can merge a PR that passes `unit-tests` with resolved conversations. Editing `config.json` on a branch no longer opens the lock. |
 
 ## Before the real handoff is enabled
 
-Close the remaining S4 gaps (path protection, required checks) and S5 first, then follow `ROUTINE.md`. Re-check S6. Consider S3's hardening.
+Resolve S10 (zero required approvals), close the remaining S4 gap (path protection) and S5 first, then follow `ROUTINE.md`. Re-check S6. Consider S3's hardening.
