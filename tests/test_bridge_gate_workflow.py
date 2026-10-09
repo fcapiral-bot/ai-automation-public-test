@@ -77,6 +77,7 @@ class StaticTests(unittest.TestCase):
         self.assertEqual(re.findall(r"^  ([a-z_]+):", on_block, re.M),
                          ["pull_request", "pull_request_review", "issue_comment", "workflow_run", "workflow_dispatch"])
         self.assertIn("types: [synchronize, reopened, ready_for_review]", on_block)
+        self.assertIn("pull_request_review:\n    types: [submitted, dismissed]", on_block)   # a dismissal lifts a human block
         # workflow_run is allowed for exactly one purpose and nothing else: waking the gate when `ci` completes.
         # tests/test_bridge_gate_ci_wakeup.py pins how it may be used.
         self.assertIn("workflow_run:\n    workflows: [ci]\n    types: [completed]", on_block)
@@ -159,7 +160,7 @@ class StaticTests(unittest.TestCase):
         self.assertIn("github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]'", CODE)
 
     def test_the_gate_is_small(self):
-        self.assertLess(len(TEXT.splitlines()), 150)
+        self.assertLess(len(TEXT.splitlines()), 160)
         self.assertLess(len((g.GATE / "gate.jq").read_text().splitlines()), 160)
         self.assertEqual(sorted(p.name for p in g.GATE.glob("*.sh")), ["collect.sh", "guard.sh", "label.sh"])
 
@@ -180,7 +181,7 @@ class Runner:
         # The real step reads the lock from the DEFAULT BRANCH over the API (never from the checkout).
         fx.put("contents_bridge-gate_config.json", {**g.CONFIG, "real_handoff_enabled": bool(unlock)})
         self.summary = self.work / "summary.md"
-        self.base = fx.env(GITHUB_RUN_ID="99", GITHUB_STEP_SUMMARY=str(self.summary), GH_TOKEN="fake", REVIEW_ID="101",
+        self.base = fx.env(GITHUB_RUN_ID="99", GITHUB_STEP_SUMMARY=str(self.summary), GH_TOKEN="fake", REVIEW_ID="101", REVIEW_ACTION="submitted",
                            HEAD_SHA=HEAD_DEFAULT, COMMENT_ID="", COMMENT_UPDATED="", DEFAULT_BRANCH="main")
         self.base.update(env)
         self.out = {}

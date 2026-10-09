@@ -21,7 +21,7 @@ on:
   pull_request:
     types: [synchronize, reopened, ready_for_review]
   pull_request_review:
-    types: [submitted]
+    types: [submitted, dismissed]
   issue_comment:
     types: [created, edited]
   workflow_run:
@@ -74,6 +74,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REVIEW_ID: ${{ github.event.review.id }}
+          REVIEW_ACTION: ${{ github.event.action }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           COMMENT_ID: ${{ github.event.comment.id }}
           COMMENT_UPDATED: ${{ github.event.comment.updated_at }}
@@ -82,7 +83,9 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           case "$EVENT_NAME" in
-            pull_request_review) key="review:$REVIEW_ID" ;;
+            # a submitted review keeps the plain key; a dismissal of the same review is a different event and gets its own
+            pull_request_review) key="review:$REVIEW_ID"; [[ $REVIEW_ACTION =~ ^[a-z_]+$ ]] || key=""
+              [[ $REVIEW_ACTION == submitted ]] || key="${key:+$key:$REVIEW_ACTION}" ;;
             pull_request) key="head:$HEAD_SHA" ;;
             issue_comment) key="comment:$COMMENT_ID@$COMMENT_UPDATED" ;;
             workflow_run) key="ci:$CI_RUN_ID:$CI_RUN_ATTEMPT"

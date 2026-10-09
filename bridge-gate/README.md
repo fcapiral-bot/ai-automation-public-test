@@ -121,6 +121,9 @@ python3 -W error -m unittest discover -s tests -t .    # whole suite (needs jq)
   duplicate/partial cases are listed in `SECURITY.md` S14.
 * **Resolved review threads** are not visible through REST. Findings are judged per head, so a fix pushed as a
   new commit clears them; manually resolving a thread on the same head does not.
+* **Review events:** the gate re-evaluates when a review is submitted or dismissed, so dismissing a human `CHANGES_REQUESTED` review lifts
+  the block without waiting for another event. A dismissal has its own event key (`review:<id>:dismissed`); body edits do not change a
+  review's state and are not a trigger.
 * **CI completion wakes the gate through `workflow_run`** (workflow named `ci`, type `completed`), so a gate run that
   saw CI pending is re-evaluated when CI finishes. GitHub runs `workflow_run` only from the **default branch's** copy of
   `bridge-gate.yml`, so it is inert until this workflow is merged to `main`; it cannot be exercised from the PR branch.
