@@ -72,9 +72,12 @@ class StaticTests(unittest.TestCase):
     def test_triggers_are_exactly_the_event_set_and_no_scheduled_or_privileged_ones(self):
         on_block = CODE.split("\non:", 1)[1].split("\npermissions:", 1)[0]
         self.assertEqual(re.findall(r"^  ([a-z_]+):", on_block, re.M),
-                         ["pull_request", "pull_request_review", "issue_comment", "workflow_dispatch"])
+                         ["pull_request", "pull_request_review", "issue_comment", "workflow_run", "workflow_dispatch"])
         self.assertIn("types: [synchronize, reopened, ready_for_review]", on_block)
-        for forbidden in ("schedule", "push", "pull_request_target", "workflow_run", "check_suite", "check_run", "status",
+        # workflow_run is allowed for exactly one purpose and nothing else: waking the gate when `ci` completes.
+        # tests/test_bridge_gate_ci_wakeup.py pins how it may be used.
+        self.assertIn("workflow_run:\n    workflows: [ci]\n    types: [completed]", on_block)
+        for forbidden in ("schedule", "push", "pull_request_target", "check_suite", "check_run", "status",
                           "repository_dispatch", "release", "issues", "create", "delete", "deployment", "workflow_call"):
             self.assertNotRegex(on_block, r"(?m)^\s*%s:" % forbidden, forbidden)
 
@@ -130,7 +133,8 @@ class StaticTests(unittest.TestCase):
         self.assertEqual(order, [COLLECT, DECIDE, GUARD, PERSIST, NOTIFY, SIMULATED, REAL, SUMMARY])
 
     def test_runs_are_serialised_per_pr_and_never_cancelled(self):
-        self.assertRegex(CODE, r"concurrency:\n  group: bridge-gate-\$\{\{ github\.event\.pull_request\.number \|\| github\.event\.issue\.number \|\| inputs\.pr_number \}\}\n  cancel-in-progress: false")
+        self.assertRegex(CODE, r"concurrency:\n  group: bridge-gate-\$\{\{ github\.event\.pull_request\.number \|\| github\.event\.issue\.number \|\| inputs\.pr_number"
+                         r" \|\| github\.event\.workflow_run\.pull_requests\[0\]\.number \|\| github\.run_id \}\}\n  cancel-in-progress: false")
 
     def test_job_is_short_and_confined_to_the_test_repository(self):
         self.assertRegex(CODE, r"(?m)^    timeout-minutes: [1-5]$")

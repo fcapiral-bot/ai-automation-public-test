@@ -104,7 +104,7 @@ class NothingStartsClaudeTests(unittest.TestCase):
 
     def test_the_gate_has_no_trigger_that_can_start_work_from_a_label_event(self):
         on_block = CODE.split("\non:", 1)[1].split("\npermissions:", 1)[0]
-        self.assertNotRegex(on_block, r"\blabeled\b|pull_request_target|workflow_run|schedule|push:")
+        self.assertNotRegex(on_block, r"\blabeled\b|pull_request_target|schedule|push:")  # workflow_run: see test_bridge_gate_ci_wakeup
 
     def test_the_gate_writes_no_secret_and_only_the_builtin_token_is_used(self):
         self.assertEqual(set(re.findall(r"secrets\.(\w+)", CODE)), {"GITHUB_TOKEN"})

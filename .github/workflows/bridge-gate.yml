@@ -7,7 +7,10 @@
 # Claude cloud Routine listens for, is present but gated behind the repository variable
 # BRIDGE_HANDOFF_MODE == 'label', which is not set, AND by `real_handoff_enabled: true` in
 # bridge-gate/config.json as read from the DEFAULT BRANCH (not the PR branch); unreadable = locked.
-# See bridge-gate/README.md and ROUTINE.md.
+# See bridge-gate/README.md and ROUTINE.md. It re-reads GitHub on a push, a review, a Codex comment and the completion of the `ci`
+# workflow (`workflow_run`), so a gate run that saw CI still pending is woken when CI finishes. GitHub runs
+# `workflow_run` from the DEFAULT branch's copy of this file with a write-capable token, so that path never checks out
+# or runs pull-request code, takes only numeric ids from the event, and judges the PR's CURRENT head from the API.
 #
 # It cannot merge, deploy, push, approve, request reviews or edit files. Its only writes are the
 # PR comments and (when the variable is set) the one handoff label. State lives in one bot-authored
@@ -21,6 +24,9 @@ on:
     types: [submitted]
   issue_comment:
     types: [created, edited]
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -36,21 +42,26 @@ permissions:
   actions: read
 
 concurrency:
-  group: bridge-gate-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+  group: bridge-gate-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || github.event.workflow_run.pull_requests[0].number || github.run_id }}
   cancel-in-progress: false
 
 jobs:
   gate:
     # issue_comment fires for every comment: only Codex's own comments on pull requests proceed.
+    # A CI-completion event proceeds only for a same-repository pull_request run that GitHub links to a PR.
     if: >-
       github.repository == 'fcapiral-bot/ai-automation-public-test' &&
       (github.event_name != 'issue_comment' ||
-      (github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]'))
+      (github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]')) &&
+      (github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.pull_requests[0].number != null))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       REPO: ${{ github.repository }}
-      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || github.event.workflow_run.pull_requests[0].number }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       KILL_SWITCH: ${{ vars.BRIDGE_KILL_SWITCH }}
       HANDOFF_MODE: ${{ vars.BRIDGE_HANDOFF_MODE }}
@@ -66,11 +77,15 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           COMMENT_ID: ${{ github.event.comment.id }}
           COMMENT_UPDATED: ${{ github.event.comment.updated_at }}
+          CI_RUN_ID: ${{ github.event.workflow_run.id }}
+          CI_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
           case "$EVENT_NAME" in
             pull_request_review) key="review:$REVIEW_ID" ;;
             pull_request) key="head:$HEAD_SHA" ;;
             issue_comment) key="comment:$COMMENT_ID@$COMMENT_UPDATED" ;;
+            workflow_run) key="ci:$CI_RUN_ID:$CI_RUN_ATTEMPT"
+              [[ $CI_RUN_ID =~ ^[0-9]+$ && $CI_RUN_ATTEMPT =~ ^[0-9]+$ ]] || key="" ;;
             *) key="" ;;
           esac
           EVENT_KEY="$key" bridge-gate/collect.sh > facts.json

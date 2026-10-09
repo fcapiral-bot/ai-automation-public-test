@@ -109,8 +109,13 @@ python3 -W error -m unittest discover -s tests -t .    # whole suite (needs jq)
 
 * **Resolved review threads** are not visible through REST. Findings are judged per head, so a fix pushed as a
   new commit clears them; manually resolving a thread on the same head does not.
-* **No event fires when CI turns green** after the last review. Re-evaluate with the workflow's manual
-  `workflow_dispatch` (`pr_number`) or add a `workflow_run` trigger naming your CI workflows later.
+* **CI completion wakes the gate through `workflow_run`** (workflow named `ci`, type `completed`), so a gate run that
+  saw CI pending is re-evaluated when CI finishes. GitHub runs `workflow_run` only from the **default branch's** copy of
+  `bridge-gate.yml`, so it is inert until this workflow is merged to `main`; it cannot be exercised from the PR branch.
+  Only GitHub Actions CI is covered (`check_run`/`check_suite` events are not delivered for checks created by Actions,
+  and a plain commit status from another service raises no event the gate listens to). The event supplies only a numeric
+  run id and the PR number; the gate always judges the PR's current head from the API. If CI is still reported as
+  running at that moment, the manual `workflow_dispatch` (`pr_number`) re-evaluates once.
 * **`issue_comment` runs only from the default branch** and only for comments by the Codex App. Until this
   workflow is on `main`, clean-review detection (the Codex summary comment) is inert.
 * **Codex "clean" detection** relies on the summary comment layout observed on a real Codex review
