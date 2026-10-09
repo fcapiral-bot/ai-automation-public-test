@@ -8,6 +8,7 @@
   "labels": {"needs_fix": "bridge:needs-fix", "usage_stop": "bridge:usage-stop"},
   "state_author": "github-actions[bot]",
   "state_marker": "<!-- bridge-gate-state:v1 ",
+  "notice_marker": "<!-- bridge-gate-notice:v1 ",
   "fix_commit_title": "Address review findings (bridge attempt {n}/{max})",
   "real_handoff_enabled": false,
   "notify_mention": ""

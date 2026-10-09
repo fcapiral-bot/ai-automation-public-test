@@ -16,12 +16,12 @@ import unittest
 from . import gate_sim as g
 from .gate_sim import CODEX, GITHUB_ACTIONS_APP_ID, check, facts, inline, review, run_gate, sha, summary
 from .test_bridge_gate_collect import Fixture
-from .test_bridge_gate_workflow import (COLLECT, DECIDE, GUARD, NOTIFY, PERSIST, REAL, Runner, findings_fixture,
+from .test_bridge_gate_workflow import (COLLECT, DECIDE, GUARD, NOTIFY, PERSIST, REAL, REMOVE, Runner, findings_fixture,
                                         script_of, step_blocks)
 
 H = sha(1)
 CFG = g.CONFIG
-PRE_REAL = [COLLECT, DECIDE, GUARD, PERSIST, NOTIFY]
+PRE_REAL = [COLLECT, DECIDE, GUARD, REMOVE, NOTIFY, PERSIST]
 
 
 def clean(checks, **over):
@@ -31,6 +31,11 @@ def clean(checks, **over):
 
 def with_finding(**over):
     return facts(H, reviews=[review(101, H)], review_comments=[inline(101)], check_runs=[check("unit-tests")], **over)
+
+
+def state_body(runner):
+    """The state comment the run wrote (the notice, if any, is a separate body that now comes first)."""
+    return next(b.read_text() for b in runner.bodies() if b.read_text().startswith("<!-- bridge-gate-state:v1 "))
 
 
 def attempt(n, head, status="superseded"):
@@ -230,16 +235,16 @@ class LockBeforeAttemptTests(unittest.TestCase):
                 fx.fail("contents_bridge-gate_config.json")
             r = Runner(fx, HANDOFF_MODE="label")                # Runner default: lock closed on the default branch
             out = r.run(steps=PRE_REAL + [REAL], HANDOFF_MODE="label")
-            self.assertEqual([p.returncode for p in out.values()], [0] * 6, {k: v.stderr for k, v in out.items()})
+            self.assertEqual([p.returncode for p in out.values()], [0] * 7, {k: v.stderr for k, v in out.items()})
             d = r.decision()
             self.assertEqual((d["decision"], d["reason"], d["handoff"]), ("BLOCKED", "HANDOFF_LOCKED", None), how)
-            saved = json.loads(r.bodies()[0].read_text().splitlines()[0][len("<!-- bridge-gate-state:v1 "):-len(" -->")])
+            saved = json.loads(state_body(r).splitlines()[0][len("<!-- bridge-gate-state:v1 "):-len(" -->")])
             self.assertEqual(saved["attempts"], [], how)
             self.assertEqual([w for w in fx.writes() if "labels" in w], [], how)
-            self.assertIn("HANDOFF_LOCKED", r.bodies()[1].read_text())
+            self.assertIn("HANDOFF_LOCKED", r.bodies()[0].read_text())    # the notice comes first, the state after it
             # the same event delivered again still creates nothing
             fx2 = findings_fixture()
-            fx2.put("issues_7_comments", [{"id": 4242, "user": {"login": "github-actions[bot]", "id": 41898282, "type": "Bot"}, "body": r.bodies()[0].read_text()}])
+            fx2.put("issues_7_comments", [{"id": 4242, "user": {"login": "github-actions[bot]", "id": 41898282, "type": "Bot"}, "body": state_body(r)}])
             if how == "unreadable":
                 fx2.fail("contents_bridge-gate_config.json")
             r2 = Runner(fx2, HANDOFF_MODE="label")
@@ -250,7 +255,7 @@ class LockBeforeAttemptTests(unittest.TestCase):
         fx = findings_fixture()
         r = Runner(fx, unlock=True, HANDOFF_MODE="label")
         out = r.run(steps=PRE_REAL + [REAL], HANDOFF_MODE="label")
-        self.assertEqual([p.returncode for p in out.values()], [0] * 6, {k: v.stderr for k, v in out.items()})
+        self.assertEqual([p.returncode for p in out.values()], [0] * 7, {k: v.stderr for k, v in out.items()})
         self.assertEqual(r.decision()["decision"], "NEEDS_FIX")
         kinds = [w.split()[0] + (" label" if "/labels" in w else " comment") for w in fx.writes()]
         self.assertEqual(kinds, ["POST comment", "POST label"])              # write-ahead order preserved
@@ -263,10 +268,11 @@ class LockBeforeAttemptTests(unittest.TestCase):
         self.assertEqual((r.decision()["decision"], r.decision()["handoff"]["mode"]), ("NEEDS_FIX", "simulate"))
 
     def test_the_real_step_still_rechecks_the_lock_as_defence_in_depth_and_only_the_collect_step_gained_an_input(self):
-        self.assertIn("real_handoff_enabled", script_of(REAL).splitlines()[0])
+        self.assertIn("real_handoff_enabled", (g.GATE / "label.sh").read_text())
+        self.assertEqual(script_of(REAL).strip(), "bridge-gate/label.sh add")
         self.assertIn("DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}", step_blocks()[COLLECT])
         self.assertIs(CFG["real_handoff_enabled"], False)
-        self.assertEqual(len(re.findall(r"vars\.BRIDGE_HANDOFF_MODE", (g.ROOT / ".github/workflows/bridge-gate.yml").read_text())), 3)
+        self.assertEqual(len(re.findall(r"vars\.BRIDGE_HANDOFF_MODE", (g.ROOT / ".github/workflows/bridge-gate.yml").read_text())), 4)
 
 
 if __name__ == "__main__":

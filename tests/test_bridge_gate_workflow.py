@@ -29,7 +29,10 @@ CODE = "\n".join(l for l in TEXT.splitlines() if not l.lstrip().startswith("#"))
 COLLECT, DECIDE, GUARD, PERSIST, NOTIFY, SIMULATED, REAL, SUMMARY = (
     "Collect evidence (read-only)", "Decide", "Guard (head unchanged)", "Persist state", "Notify on READY, BLOCKED, MAX_ATTEMPTS or USAGE_STOP",
     "Handoff (SIMULATED, log only)", "Handoff (REAL label, gated by BRIDGE_HANDOFF_MODE=label)", "Summary")
-PIPELINE = [COLLECT, DECIDE, GUARD, PERSIST, NOTIFY, SIMULATED, SUMMARY]
+REMOVE = "Remove a superseded or timed-out handoff label (REAL, gated)"
+# Simulate mode, in workflow order. Real mode adds REMOVE (before NOTIFY) and REAL (after PERSIST); test_steps_run_in_effect_then_commit_order pins this.
+PIPELINE = [COLLECT, DECIDE, GUARD, NOTIFY, PERSIST, SIMULATED, SUMMARY]
+PRE_ADD = [COLLECT, DECIDE, GUARD, REMOVE, NOTIFY, PERSIST]   # real mode: everything before the label is added
 
 
 def step_blocks():
@@ -112,25 +115,36 @@ class StaticTests(unittest.TestCase):
                 self.assertNotRegex(script_of(name), forbidden, name)
 
     def test_every_write_is_a_comment_or_the_one_label(self):
-        allowed = (r"^repos/\$REPO/issues/comments/\$id$", r"^repos/\$REPO/issues/\$PR_NUMBER/comments$",
-                   r"^repos/\$REPO/issues/\$PR_NUMBER/labels$", r"^repos/\$REPO/issues/\$PR_NUMBER/labels/\$enc$")
+        # The workflow itself writes only PR comments; the two label operations live in bridge-gate/label.sh (pinned below).
+        allowed = (r"^repos/\$REPO/issues/comments/\$id$", r"^repos/\$REPO/issues/\$PR_NUMBER/comments$")
         writes = re.findall(r'gh api -X (POST|PATCH|DELETE) "([^"]+)"', CODE)
         self.assertTrue(writes)
         for method, path in writes:
             self.assertTrue(any(re.match(a, path) for a in allowed), (method, path))
         self.assertNotRegex(CODE, r"gh api(?! -X)[^\n]*(-f|-F) ")  # no implicit POSTs
 
-    def test_the_real_handoff_is_the_only_label_writer_and_is_gated_off_by_default(self):
-        label_steps = [n for n, b in step_blocks().items() if "/labels" in b]
-        self.assertEqual(label_steps, [REAL])
-        self.assertIn("if: ${{ vars.BRIDGE_HANDOFF_MODE == 'label' }}", step_blocks()[REAL])
+    def test_label_writes_live_only_in_label_sh_and_both_real_steps_are_gated_off_by_default(self):
+        self.assertEqual([n for n, b in step_blocks().items() if "/labels" in b], [])          # no label endpoint in the workflow
+        for name, op in ((REMOVE, "remove"), (REAL, "add")):
+            self.assertIn("if: ${{ vars.BRIDGE_HANDOFF_MODE == 'label' }}", step_blocks()[name])
+            self.assertEqual(script_of(name).strip(), "bridge-gate/label.sh " + op)
         self.assertIn("if: ${{ vars.BRIDGE_HANDOFF_MODE != 'label' }}", step_blocks()[SIMULATED])
-        # the variable is read in exactly three places: the job env (passed to the collector) and the two step gates
-        self.assertEqual(len(re.findall(r"vars\.BRIDGE_HANDOFF_MODE", CODE)), 3)
+        # the variable is read in exactly four places: the job env (passed to the collector), the simulated step, and the two real steps
+        self.assertEqual(len(re.findall(r"vars\.BRIDGE_HANDOFF_MODE", CODE)), 4)
+        # label.sh is the only script that names the labels endpoint, and it only POSTs or DELETEs there
+        writers = [p.name for p in g.GATE.glob("*.sh") if "/labels" in p.read_text()]
+        self.assertEqual(writers, ["label.sh"])
 
-    def test_steps_run_in_write_ahead_order(self):
+    def test_steps_run_in_effect_then_commit_order(self):
+        # idempotent effects (label removal, notice) -> state commit -> the one non-idempotent effect (label add, write-ahead)
         order = [n for n in step_blocks() if n != "actions/checkout@v4"]
-        self.assertEqual(order, [COLLECT, DECIDE, GUARD, PERSIST, NOTIFY, SIMULATED, REAL, SUMMARY])
+        self.assertEqual(order, [COLLECT, DECIDE, GUARD, REMOVE, NOTIFY, PERSIST, SIMULATED, REAL, SUMMARY])
+        self.assertEqual([n for n in order if n not in (REMOVE, REAL)][:-1], PIPELINE[:-1] + [])   # the simulate-mode constant mirrors the YAML
+        self.assertEqual(PRE_ADD, [n for n in order if n not in (SIMULATED, REAL, SUMMARY)])
+        self.assertLess(order.index(PERSIST), order.index(REAL))                                     # the label never precedes the recorded attempt
+        for name in (NOTIFY, PERSIST):                                                               # a guard immediately before each write
+            self.assertTrue(script_of(name).count("bridge-gate/guard.sh decision.json") == 1, name)
+            self.assertLess(script_of(name).index("guard.sh"), script_of(name).index("gh api"))
 
     def test_runs_are_serialised_per_pr_and_never_cancelled(self):
         self.assertRegex(CODE, r"concurrency:\n  group: bridge-gate-\$\{\{ github\.event\.pull_request\.number \|\| github\.event\.issue\.number \|\| inputs\.pr_number"
@@ -146,8 +160,8 @@ class StaticTests(unittest.TestCase):
 
     def test_the_gate_is_small(self):
         self.assertLess(len(TEXT.splitlines()), 150)
-        self.assertLess(len((g.GATE / "gate.jq").read_text().splitlines()), 150)
-        self.assertEqual(sorted(p.name for p in g.GATE.glob("*.sh")), ["collect.sh", "guard.sh"])
+        self.assertLess(len((g.GATE / "gate.jq").read_text().splitlines()), 160)
+        self.assertEqual(sorted(p.name for p in g.GATE.glob("*.sh")), ["collect.sh", "guard.sh", "label.sh"])
 
     def test_config_defaults_are_the_documented_safe_ones(self):
         c = g.CONFIG
@@ -248,7 +262,7 @@ class ExecutedGlueTests(unittest.TestCase):
         r = Runner(fx)
         out = r.run()
         self.assertNotEqual(out[PERSIST].returncode, 0)
-        self.assertEqual(list(out), [COLLECT, DECIDE, GUARD, PERSIST])  # stopped: notify/handoff/summary never ran
+        self.assertEqual(list(out), [COLLECT, DECIDE, GUARD, NOTIFY, PERSIST])  # stopped at the failed state write: no label, no summary
         self.assertEqual(fx.writes(), [])
 
     def test_an_api_failure_ends_in_a_block_with_no_writes_and_no_handoff(self):
@@ -269,8 +283,10 @@ class ExecutedGlueTests(unittest.TestCase):
         r = Runner(fx)
         out = r.run()
         self.assertEqual(r.decision()["decision"], "READY")
-        self.assertEqual([w.split()[0] for w in fx.writes()], ["POST", "POST"])  # state, notification
-        note = r.bodies()[1].read_text()
+        self.assertEqual([w.split()[0] for w in fx.writes()], ["POST", "POST"])  # notification first, then the state commit
+        note = r.bodies()[0].read_text()
+        self.assertTrue(note.startswith("<!-- bridge-gate-notice:v1 %s:READY:CODEX_CLEAN_AND_CI_PASSING -->\n" % HEAD_DEFAULT), note[:120])
+        self.assertTrue(r.bodies()[1].read_text().startswith("<!-- bridge-gate-state:v1 "))
         self.assertIn("READY for human review", note)
         self.assertIn("the gate never merges", note)
         self.assertNotIn("SIMULATED HANDOFF", out[SIMULATED].stdout)
@@ -280,7 +296,7 @@ class ExecutedGlueTests(unittest.TestCase):
         r = Runner(fx, KILL_SWITCH="true")
         r.run()
         self.assertEqual((r.decision()["decision"], r.decision()["handoff"]), ("USAGE_STOP", None))
-        self.assertIn("USAGE_STOP", r.bodies()[1].read_text())
+        self.assertIn("USAGE_STOP (KILL_SWITCH)", r.bodies()[0].read_text())   # the notice (state is committed after it)
 
     def test_mention_is_configurable_and_off_by_default(self):
         cfg = json.loads((g.GATE / "config.json").read_text())
@@ -290,14 +306,14 @@ class ExecutedGlueTests(unittest.TestCase):
         rendered = subprocess.run(["jq", "-r", "--arg", "kind", "notify", "--slurpfile", "cfg", str(cfgfile), "-f", str(g.GATE / "render.jq")],
                                   input=json.dumps({"decision": "READY", "reason": "x", "head": sha(1), "state": {"attempts": []}}),
                                   capture_output=True, text=True).stdout
-        self.assertTrue(rendered.startswith("@some-user READY"), rendered)
+        self.assertEqual(rendered.splitlines()[1][:len("@some-user READY")], "@some-user READY", rendered)   # line 1 is the notice key
 
     def test_the_real_handoff_script_adds_the_label_and_clears_it_when_superseded(self):
         fx = findings_fixture()
         r = Runner(fx, unlock=True, HANDOFF_MODE="label")
         r.run(steps=[COLLECT, DECIDE])
         fx_writes_before = len(fx.writes())
-        out = r.run(steps=[REAL], HANDOFF_MODE="label")  # reuse decision.json from the pipeline above
+        out = r.run(steps=[REAL], HANDOFF_MODE="label")  # "add"; reuses decision.json from the pipeline above
         self.assertEqual(out[REAL].returncode, 0, out[REAL].stderr)
         added = fx.writes()[fx_writes_before:]
         self.assertEqual(added, ["POST repos/o/r/issues/7/labels labels[]=bridge:needs-fix"])
@@ -305,14 +321,18 @@ class ExecutedGlueTests(unittest.TestCase):
         decision = r.decision(); decision["clear_label"] = True; decision["handoff"] = None
         (r.work / "decision.json").write_text(json.dumps(decision))
         n = len(fx.writes())
-        r.run(steps=[REAL], HANDOFF_MODE="label")
+        r.run(steps=[REMOVE], HANDOFF_MODE="label")                 # "remove" is its own step, before the notice and the state commit
         self.assertEqual(fx.writes()[n:], ["DELETE repos/o/r/issues/7/labels/bridge%3Aneeds-fix"])
+        n = len(fx.writes())
+        r.run(steps=[REAL], HANDOFF_MODE="label")                   # no handoff in this decision: "add" does nothing
+        self.assertEqual(fx.writes()[n:], [])
 
     def test_the_guard_runs_before_any_write_and_again_before_the_real_label(self):
         self.assertIn("bridge-gate/guard.sh decision.json", script_of(GUARD))
-        lines = script_of(REAL).strip().splitlines()
-        self.assertIn("real_handoff_enabled", lines[0])           # the committed lock comes first
-        self.assertEqual(lines[1], "bridge-gate/guard.sh decision.json")
+        sh = (g.GATE / "label.sh").read_text()
+        add = sh[sh.index("else\n  \"$here/guard.sh\""):]
+        self.assertIn('"$here/guard.sh" decision.json', add)                     # the add path re-checks the head
+        self.assertLess(sh.index("real_handoff_enabled"), sh.index('"$here/guard.sh"'))   # the lock comes first
 
     def move_head(self, fx, n=2):
         pr = json.loads((fx.dir / "pulls_7.json").read_text()); pr["head"]["sha"] = sha(n); fx.put("pulls_7", pr)
@@ -325,7 +345,7 @@ class ExecutedGlueTests(unittest.TestCase):
         self.move_head(fx)
         out = r.run(steps=[GUARD, PERSIST, NOTIFY, SIMULATED])
         self.assertNotEqual(out[GUARD].returncode, 0)
-        self.assertIn("refusing a stale handoff", out[GUARD].stderr)
+        self.assertIn("refusing a stale decision", out[GUARD].stderr)
         self.assertEqual(list(out), [GUARD])
         self.assertEqual(fx.writes(), [])
 
@@ -347,15 +367,19 @@ class ExecutedGlueTests(unittest.TestCase):
         self.assertNotEqual(out[GUARD].returncode, 0)
         self.assertIn("cannot re-read", out[GUARD].stderr)
 
-    def test_an_unchanged_head_passes_and_a_decision_without_handoff_never_needs_the_api(self):
+    def test_an_unchanged_head_passes_and_a_decision_that_writes_nothing_never_needs_the_api(self):
         fx = findings_fixture()
         r = Runner(fx)
         r.run(steps=[COLLECT, DECIDE])
-        self.assertEqual(r.run(steps=[GUARD])[GUARD].returncode, 0)
-        decision = r.decision(); decision["handoff"] = None
+        self.assertEqual(r.run(steps=[GUARD])[GUARD].returncode, 0)          # a decision that writes: head unchanged, passes
+        decision = r.decision()
+        decision.update(handoff=None, notify=False, state_changed=False, clear_label=False)   # nothing to write
         (r.work / "decision.json").write_text(json.dumps(decision))
         fx.fail("pulls_7")
-        self.assertEqual(r.run(steps=[GUARD])[GUARD].returncode, 0)
+        self.assertEqual(r.run(steps=[GUARD])[GUARD].returncode, 0)          # so the guard does not need to read the PR
+        decision["state_changed"] = True                                     # as soon as it WOULD write, an unreadable head refuses
+        (r.work / "decision.json").write_text(json.dumps(decision))
+        self.assertNotEqual(r.run(steps=[GUARD])[GUARD].returncode, 0)
 
     def test_the_committed_lock_keeps_the_real_step_off_even_with_the_variable_set_to_label(self):
         # Security preflight: the repository variable alone must never enable the real handoff.

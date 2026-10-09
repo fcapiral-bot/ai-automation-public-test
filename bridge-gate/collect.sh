@@ -69,6 +69,12 @@ case $(jq length "$tmp/state_comments.json") in
   *) inc+=("state_duplicate") ;;
 esac
 
+# Notices already posted by the gate (bot-authored, first line carries the key head:decision:reason). Lets a re-run skip a notice
+# whose state write failed instead of posting it again. A human can forge the marker but not the author.
+jq --arg a "$(jq -r .state_author "$CFG")" --arg m "$(jq -r .notice_marker "$CFG")" \
+   '[.[] | select(.login == $a and .type == "Bot" and (.body | startswith($m))) | (.body | split("\n")[0] | ltrimstr($m) | rtrimstr(" -->"))]' \
+   "$tmp/all_comments.json" > "$tmp/notices.json"
+
 jq --arg login "$(jq -r .codex.login "$CFG")" \
    '[.[] | select(.login == $login) | .body = .body[0:4000]]' "$tmp/all_comments.json" > "$tmp/issue_comments.json"
 
@@ -89,9 +95,9 @@ jq -n \
   --argjson inc "$(printf '%s\n' ${inc[@]+"${inc[@]}"} | jq -R . | jq -s 'map(select(length > 0)) | unique')" \
   --slurpfile pr "$tmp/pr.json" --slurpfile reviews "$tmp/reviews.json" --slurpfile rc "$tmp/review_comments.json" \
   --slurpfile ic "$tmp/issue_comments.json" --slurpfile cr "$tmp/check_runs.json" --slurpfile st "$tmp/status.json" \
-  --slurpfile runs "$tmp/runs.json" --slurpfile hc "$tmp/head_commit.json" '
+  --slurpfile runs "$tmp/runs.json" --slurpfile hc "$tmp/head_commit.json" --slurpfile notices "$tmp/notices.json" '
   {now: $now, event: {name: $name, key: (if $key == "" then null else $key end)}, incomplete: $inc,
    kill_switch: $kill, handoff_mode: $mode, handoff_lock_open: $lock, pr: $pr[0], reviews: $reviews[0], review_comments: $rc[0],
    issue_comments: $ic[0], check_runs: $cr[0], combined_status: $st[0],
    head_commit: $hc[0], own_suite_ids: [$runs[0][] | select(.workflow_id == $wid) | .suite],
-   state: $state, state_comment_id: $sid}'
+   notices: $notices[0], state: $state, state_comment_id: $sid}'

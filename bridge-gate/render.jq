@@ -18,5 +18,5 @@ $cfg[0] as $c
     + "| Decision | `" + .decision + "` |\n| Reason | `" + .reason + "` |\n| Head | `" + .head[0:7] + "` |\n"
     + "| Attempts used | " + (.state.attempts | length | tostring) + " of " + ($c.max_attempts | tostring) + " |"
   else
-    $who + msg
+    "<!-- bridge-gate-notice:v1 " + .notice_key + " -->\n" + $who + msg
   end

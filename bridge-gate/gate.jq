@@ -29,6 +29,7 @@ $facts[0] as $f | $cfg[0] as $c
       (if $f.state == null then empty
        elif ($f.state | type) == "object" and $f.state.v == 1 and ($f.state.attempts | isarr) and ($f.state.seen | isarr)
        then empty else "state_malformed" end),
+      (if ($f | has("notices")) and (($f.notices | isarr) | not) then "notices_malformed" else empty end),
       (if ($f | has("_fixture")) and (($ARGS.named.allow_fixture // "") != "test-fixture-run") then "fixture_rejected" else empty end),
       (if ($f.now | type) != "number" then "now_malformed" else empty end),
       (if ($f.head_commit | type) != "object" or (($f.head_commit.subject | type) != "string") or (($f.head_commit.parents | isarr) | not)
@@ -128,6 +129,7 @@ $facts[0] as $f | $cfg[0] as $c
      then $recT + [{n: (($recT | length) + 1), head: $head, trigger: $key, reason: $d.reason, at: $f.now,
                     lease_expires: ($f.now + $c.lease_minutes * 60), status: "in_flight"}]
      else $recT end) as $atts
+  | ($head + ":" + $d.decision + ":" + $d.reason) as $nk
   | (($st.seen + (if $key != null and ($dup | not) then [$key] else [] end)) | .[-20:]) as $seen
   | {v: 1, attempts: $atts, seen: $seen, last: {decision: $d.decision, reason: $d.reason, head: $head}} as $new
   | {decision: $d.decision, reason: $d.reason, head: $head, duplicate: $dup, fixture: ($f._fixture // null),
@@ -135,8 +137,12 @@ $facts[0] as $f | $cfg[0] as $c
                then {pr: $f.pr.number, head: $head, attempt: ($atts | length), of: $c.max_attempts, reason: $d.reason,
                      label: $c.labels.needs_fix, mode: ($f.handoff_mode // "simulate"), lease_expires: ($atts | last | .lease_expires)}
                else null end),
+     notice_key: $nk,
+     # One notice per head + decision + reason: not when the state already says so, and not when the gate already posted it
+     # (a run whose notice landed but whose state write failed must not post it a second time).
      notify: ((($d.decision | IN("READY", "BLOCKED", "MAX_ATTEMPTS", "USAGE_STOP")))
-              and ($st.last == null or $st.last.decision != $d.decision or $st.last.reason != $d.reason or $st.last.head != $head)),
+              and ($st.last == null or $st.last.decision != $d.decision or $st.last.reason != $d.reason or $st.last.head != $head)
+              and ((($f.notices // []) | index($nk)) == null)),
      clear_label: ($d.timeout == true or ([$rec[] | select(.status == "superseded")] | length) != ([$st.attempts[] | select(.status == "superseded")] | length)),
      state: $new, state_changed: ($new != $f.state),
      evidence: {codex_findings: $nf, codex_unclassified: $nu, codex_stale: n_stale, ci_failing: ci_fail,

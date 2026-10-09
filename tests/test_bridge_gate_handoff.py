@@ -75,8 +75,7 @@ class LockTests(unittest.TestCase):
         self.assertEqual(fx.writes(), [])
 
     def test_the_lock_is_read_from_the_default_branch_ref_over_the_api(self):
-        first = script_of(REAL).splitlines()[0]
-        self.assertIn('contents/bridge-gate/config.json?ref=$DEFAULT_BRANCH', first)
+        self.assertIn('contents/bridge-gate/config.json?ref=$DEFAULT_BRANCH', (g.GATE / "label.sh").read_text())   # never the PR checkout
         self.assertIn("github.event.repository.default_branch", step_blocks()[REAL])
         fx = findings_fixture(); r = Runner(fx, unlock=True, HANDOFF_MODE="label")
         r.run(steps=[COLLECT, DECIDE]); r.run(steps=[REAL], HANDOFF_MODE="label")
@@ -167,7 +166,7 @@ class RoutinePromptTests(unittest.TestCase):
         p = re.sub(r"\s+", " ", prompt(2))
         self.assertIn("Do not retry in a loop", p)
         self.assertIn("Nothing further was pushed", p)
-        self.assertIn("ends the attempt on its own after its lease", p)
+        self.assertIn("ends the attempt at its next evaluation after the lease", p)
 
     def test_prompts_name_no_other_repository_and_no_credentials_or_endpoints(self):
         self.assertEqual(set(re.findall(r"fcapiral-bot/[\w-]+", "\n".join(prompt(s) for s in (1, 2)))),

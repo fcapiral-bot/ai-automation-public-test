@@ -60,5 +60,5 @@ You are the correction step of a controlled review loop for the repository fcapi
     unclear, stop at once and push nothing more. Do not retry in a loop, do not look for a workaround (no other
     branch, no force-push, no tokens, no extra usage). Post at most ONE comment: "Bridge attempt N/3 stopped:
     <usage limit | permission | other>. Nothing further was pushed." If you cannot comment, just stop: the gate
-    ends the attempt on its own after its lease and notifies a person.
+    ends the attempt at its next evaluation after the lease (another event, or a manual dispatch) and notifies a person.
 ```

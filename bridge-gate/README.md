@@ -12,7 +12,8 @@ decides, a small guard re-checks the head, and one PR comment holds the state.
 | --- | --- |
 | `../.github/workflows/bridge-gate.yml` | Event glue: collect → decide → persist state → notify → handoff (simulated) |
 | `collect.sh` | Read-only `gh api` GETs → one normalized facts JSON. Any failure becomes `incomplete` evidence |
-| `guard.sh` | Refuses a handoff if the PR head moved since the decision (fail closed) |
+| `guard.sh` | Refuses any decision that is about to write if the PR head moved since the decision (fail closed) |
+| `label.sh` | The only label writer (real mode, locked by default): `remove` tolerates only HTTP 404, `add` follows the recorded attempt |
 | `SECURITY.md` | Pre-activation security review: findings, verdict, what blocks real activation |
 | `gate.jq` | **All decisions.** Pure: facts + `config.json` in, decision + next state out. No clock, no network |
 | `render.jq` | Comment text, built only from decision codes, ids and counts (never from GitHub text) |
@@ -69,15 +70,20 @@ Four independent layers keep two correction sessions from overlapping:
    intermediate run loses nothing.
 2. **One attempt per (PR, head)**: the attempt record is keyed by head SHA. While it is `in_flight` and its lease
    is unexpired the decision is `WAIT / HANDOFF_IN_FLIGHT` whatever event arrives.
-3. **Write-ahead state**: the state comment is written *before* the handoff step, and the job stops at the first
-   failing step. If the write fails there is no handoff.
+3. **Effects, then commit, then the label**: idempotent effects run first (label removal; the notice, which carries a key so a
+   re-run never posts it twice), then the state comment is written, and the handoff label is added last (write-ahead: no
+   label without a recorded attempt). The job stops at the first failing step, so a failed write leaves the transition
+   uncommitted and a re-run of the same event repeats it: nothing is lost.
 4. **Only the session's own commit completes an attempt**: the head must be one commit directly on the attempt's
    head, titled exactly `Address review findings (bridge attempt N/3)`. Any other new head (a person's push, a
-   rebase, a merge) leaves the attempt in flight until its lease expires, then `BLOCKED / HANDOFF_TIMEOUT`
-   (and the label is released). The gate never starts a second session beside a possibly still-running one.
+   rebase, a merge) leaves the attempt in flight until its lease expires. The timeout itself, `BLOCKED / HANDOFF_TIMEOUT` with the
+   label released and a notice, is recorded only when the gate is next evaluated after the lease: another event, or a manual
+   `workflow_dispatch` (nothing wakes the gate when the lease expires; see Known limitations). The gate never starts a second
+   session beside a possibly still-running one.
 
-A separate **stale-head guard** (`guard.sh`) re-reads the PR head right after the decision (before any write) and
-again immediately before the real label, and refuses the handoff if the head moved or cannot be read.
+A separate **stale-head guard** (`guard.sh`) re-reads the PR head right after the decision and again immediately before each write
+(the notice, the state comment, the label add), and refuses a decision whose head moved or cannot be read, so a stale READY, BLOCKED or
+NEEDS_FIX is never recorded or announced.
 
 Attempts are counted from this persisted state (all statuses count, including timed out), not from commit
 counts. `seen` keeps the last 20 event keys; a repeated key sets `duplicate: true` for logging. Duplicates are
@@ -107,6 +113,12 @@ python3 -W error -m unittest discover -s tests -t .    # whole suite (needs jq)
 
 ## Known limitations
 
+* **No lease-expiry wakeup (no watchdog).** Nothing runs the gate when a handoff lease expires. A timed-out attempt is noticed
+  (`BLOCKED / HANDOFF_TIMEOUT`, label cleanup, notice) only when another event arrives or a person runs the workflow manually
+  (`workflow_dispatch`, `pr_number`). A bounded scheduled watchdog is deliberately **not implemented**; it is a documented blocker
+  for unattended activation (`SECURITY.md` S15).
+* **A failed write fails the run.** Re-run the failed job: nothing was committed, so the same event is repeated. Residual
+  duplicate/partial cases are listed in `SECURITY.md` S14.
 * **Resolved review threads** are not visible through REST. Findings are judged per head, so a fix pushed as a
   new commit clears them; manually resolving a thread on the same head does not.
 * **CI completion wakes the gate through `workflow_run`** (workflow named `ci`, type `completed`), so a gate run that

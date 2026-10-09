@@ -70,9 +70,9 @@ class RaceTests(unittest.TestCase):
         out = run_ok(r2, **RUN)
         d = r2.decision()
         self.assertEqual((d["decision"], d["reason"], d["duplicate"], d["handoff"]), ("READY", "CODEX_CLEAN_AND_CI_PASSING", False, None))
-        self.assertEqual([w.split()[0] for w in fx2.writes()], ["PATCH", "POST"])  # state edited in place, one notification
-        self.assertIn("PATCH repos/o/r/issues/comments/4242", fx2.writes()[0])
-        self.assertIn("READY for human review", r2.bodies()[1].read_text())
+        self.assertEqual([w.split()[0] for w in fx2.writes()], ["POST", "PATCH"])  # one notice, then the state edited in place
+        self.assertIn("PATCH repos/o/r/issues/comments/4242", fx2.writes()[1])
+        self.assertIn("READY for human review", r2.bodies()[0].read_text())
         self.assertNotIn("SIMULATED HANDOFF", out[SIMULATED].stdout)
         self.assertEqual([w for w in fx2.writes() if "labels" in w], [])
 
@@ -308,8 +308,8 @@ class WorkflowStaticTests(unittest.TestCase):
         cfg = json.loads((g.GATE / "config.json").read_text())
         self.assertIs(cfg["require_ci"], True)
         self.assertIs(cfg["real_handoff_enabled"], False)
-        self.assertEqual(len(re.findall(r"vars\.BRIDGE_HANDOFF_MODE", CODE)), 3)
-        self.assertIn("real_handoff_enabled", script_of("Handoff (REAL label, gated by BRIDGE_HANDOFF_MODE=label)").splitlines()[0])
+        self.assertEqual(len(re.findall(r"vars\.BRIDGE_HANDOFF_MODE", CODE)), 4)   # job env, simulated step, remove step, add step
+        self.assertIn("real_handoff_enabled", (g.GATE / "label.sh").read_text())
 
 
 if __name__ == "__main__":

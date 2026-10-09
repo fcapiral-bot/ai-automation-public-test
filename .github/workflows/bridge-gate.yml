@@ -13,7 +13,7 @@
 # or runs pull-request code, takes only numeric ids from the event, and judges the PR's CURRENT head from the API.
 #
 # It cannot merge, deploy, push, approve, request reviews or edit files. Its only writes are the
-# PR comments and (when the variable is set) the one handoff label. State lives in one bot-authored
+# PR comments and (when the variable is set and the lock is open) the one handoff label (bridge-gate/label.sh). State lives in one bot-authored
 # PR comment; concurrency serialises runs per PR.
 name: bridge-gate (event-driven, simulated handoff only)
 
@@ -94,24 +94,34 @@ jobs:
       - name: Decide
         run: jq -n --slurpfile facts facts.json --slurpfile cfg bridge-gate/config.json -f bridge-gate/gate.jq > decision.json
 
-      # A push between evaluation and here makes the decision stale: stop before anything is written.
+      # Order matters. A failed write stops the run BEFORE the transition is recorded, so re-running the same event repeats it and
+      # nothing is lost: idempotent effects first (label removal tolerates only HTTP 404; the notice carries a key, so a re-run
+      # never posts it twice), then the state commit, then the one non-idempotent effect, adding the label, which must follow
+      # the recorded attempt (write-ahead). The stale-head guard runs again immediately before every write.
       - name: Guard (head unchanged)
         run: bridge-gate/guard.sh decision.json
 
-      # Write-ahead: the state is saved BEFORE any handoff, so a failed write means no handoff.
-      - name: Persist state
-        run: |
-          [ "$(jq -r .state_changed decision.json)" = true ] || exit 0
-          jq -r --arg kind state --slurpfile cfg bridge-gate/config.json -f bridge-gate/render.jq decision.json > body.txt
-          id=$(jq -r '.state_comment_id // empty' facts.json)
-          if [ -n "$id" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@body.txt > /dev/null
-          else gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@body.txt > /dev/null; fi
+      - name: Remove a superseded or timed-out handoff label (REAL, gated)
+        if: ${{ vars.BRIDGE_HANDOFF_MODE == 'label' }}
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: bridge-gate/label.sh remove
 
       - name: Notify on READY, BLOCKED, MAX_ATTEMPTS or USAGE_STOP
         run: |
           [ "$(jq -r .notify decision.json)" = true ] || exit 0
+          bridge-gate/guard.sh decision.json
           jq -r --arg kind notify --slurpfile cfg bridge-gate/config.json -f bridge-gate/render.jq decision.json > note.txt
           gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@note.txt > /dev/null
+
+      - name: Persist state
+        run: |
+          [ "$(jq -r .state_changed decision.json)" = true ] || exit 0
+          bridge-gate/guard.sh decision.json
+          jq -r --arg kind state --slurpfile cfg bridge-gate/config.json -f bridge-gate/render.jq decision.json > body.txt
+          id=$(jq -r '.state_comment_id // empty' facts.json)
+          if [ -n "$id" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@body.txt > /dev/null
+          else gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@body.txt > /dev/null; fi
 
       - name: Handoff (SIMULATED, log only)
         if: ${{ vars.BRIDGE_HANDOFF_MODE != 'label' }}
@@ -121,23 +131,13 @@ jobs:
           [ "$(jq -r .clear_label decision.json)" = true ] && echo "SIMULATED: would remove the handoff label (a newer head superseded the attempt)"
           exit 0
 
-      # NOT ACTIVE: runs only when the repository variable BRIDGE_HANDOFF_MODE is exactly 'label'.
-      # Applying the label is the whole handoff: a Claude cloud Routine fires on it (bridge-gate/ROUTINE.md).
+      # NOT ACTIVE: runs only when the repository variable BRIDGE_HANDOFF_MODE is exactly 'label' AND the default-branch lock is
+      # open (label.sh). Applying the label is the whole handoff: a Claude cloud Routine fires on it (bridge-gate/ROUTINE.md).
       - name: Handoff (REAL label, gated by BRIDGE_HANDOFF_MODE=label)
         if: ${{ vars.BRIDGE_HANDOFF_MODE == 'label' }}
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          gh api -H 'Accept: application/vnd.github.raw+json' "repos/$REPO/contents/bridge-gate/config.json?ref=$DEFAULT_BRANCH" 2>/dev/null | jq -e '.real_handoff_enabled == true' > /dev/null 2>&1 || { echo "REAL handoff is locked off (real_handoff_enabled is not true in bridge-gate/config.json on the default branch, or it could not be read); doing nothing."; exit 0; }
-          bridge-gate/guard.sh decision.json
-          label=$(jq -r .labels.needs_fix bridge-gate/config.json)
-          enc=$(jq -rn --arg l "$label" '$l | @uri')
-          if [ "$(jq -r .clear_label decision.json)" = true ]; then
-            gh api -X DELETE "repos/$REPO/issues/$PR_NUMBER/labels/$enc" > /dev/null || true
-          fi
-          if [ "$(jq -r '.handoff != null' decision.json)" = true ]; then
-            gh api -X POST "repos/$REPO/issues/$PR_NUMBER/labels" -f "labels[]=$label" > /dev/null
-          fi
+        run: bridge-gate/label.sh add
 
       - name: Summary
         if: ${{ always() }}

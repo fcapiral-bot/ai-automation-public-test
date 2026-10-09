@@ -20,6 +20,11 @@ while (($#)); do
 done
 if [[ $method != GET ]]; then
   if [[ -f $dir/fail_writes ]]; then echo "HTTP 403" >&2; exit 1; fi
+  # Fail exactly the Nth write ATTEMPT once (a transient error). fail_status picks the HTTP status (default 502; 404 for "already gone").
+  echo "$method $endpoint" >> "$dir/attempts.log"
+  if [[ -f $dir/fail_attempt && $(wc -l < "$dir/attempts.log") -eq $(cat "$dir/fail_attempt") ]]; then
+    echo "gh: failed (HTTP $(cat "$dir/fail_status" 2>/dev/null || echo 502))" >&2; exit 1
+  fi
   n=$(($(wc -l < "$dir/writes.log" 2>/dev/null || echo 0) + 1))
   echo "$method $endpoint$fields" >> "$dir/writes.log"
   for kv in $fields; do [[ $kv == body=@* ]] && cp "${kv#body=@}" "$dir/body-$n.txt"; done
