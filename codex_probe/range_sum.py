@@ -7,6 +7,6 @@ def inclusive_range_sum(start, end):
     inclusive_range_sum(1, 4) is expected to return 1 + 2 + 3 + 4 = 10.
     """
     total = 0
-    for n in range(start, end):
+    for n in range(start, end + 1):
         total += n
     return total
