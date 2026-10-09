@@ -1,0 +1,70 @@
+# TEST FIXTURE ONLY. A dry run of the bridge-gate decision program on SYNTHETIC facts.
+#
+# It feeds bridge-gate/fixtures/needs-fix.facts.json (a made-up "current-head Codex finding") through the real
+# bridge-gate/gate.jq and logs the decision and the SIMULATED handoff. It is not the production gate:
+#   * no GitHub API calls, no `gh`, no comments, no labels, no state writes: the token is read-only (contents: read)
+#   * no label step exists in this file, and it reads no repository variable and no secret, so no setting can enable one
+#   * the fixture is rejected by gate.jq in any normal run; only the explicit test-run token below accepts it
+#   * no Claude, no Codex, no Routine, no paid service; nothing here is, or impersonates, a real Codex review
+#
+# Triggers: a push to the single branch test/bridge-gate-fixture (the only way to run it before it reaches the
+# default branch), and workflow_dispatch (usable once this file is on the default branch). Nothing else.
+name: bridge-gate-fixture (TEST FIXTURE · dry run · no GitHub writes)
+
+on:
+  push:
+    branches: [test/bridge-gate-fixture]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bridge-gate-fixture
+  cancel-in-progress: false
+
+jobs:
+  fixture:
+    if: github.repository == 'fcapiral-bot/ai-automation-public-test'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Control: normal handling (no test token) must refuse the fixture and hand off nothing.
+      - name: Control (production handling must REJECT the fixture)
+        run: |
+          jq -n --slurpfile facts bridge-gate/fixtures/needs-fix.facts.json --slurpfile cfg bridge-gate/config.json -f bridge-gate/gate.jq > rejected.json
+          jq -c '{decision, reason, problems, handoff}' rejected.json
+          jq -e '.decision == "BLOCKED" and .reason == "EVIDENCE_UNAVAILABLE" and .problems == ["fixture_rejected"] and .handoff == null' rejected.json > /dev/null
+
+      - name: Event 1 (fixture current-head finding) expects NEEDS_FIX, attempt 1 of 3
+        run: |
+          jq -n --arg allow_fixture test-fixture-run --slurpfile facts bridge-gate/fixtures/needs-fix.facts.json --slurpfile cfg bridge-gate/config.json -f bridge-gate/gate.jq > decision1.json
+          jq -c '{fixture: (.fixture | .[0:12]), decision, reason, duplicate, notify, evidence}' decision1.json
+          jq -e '.decision == "NEEDS_FIX" and .handoff.attempt == 1 and .handoff.of == 3 and .handoff.mode == "simulate"' decision1.json > /dev/null
+          jq -r '"SIMULATED HANDOFF (fixture, nothing started): would add label \"" + .handoff.label + "\" to fixture PR #" + (.handoff.pr | tostring)
+            + " for head " + .handoff.head[0:7] + " (attempt " + (.handoff.attempt | tostring) + " of " + (.handoff.of | tostring) + ")"' decision1.json
+          jq -c '{recorded_state: .state}' decision1.json
+
+      - name: Event 2 (the same event delivered again) expects no second handoff
+        run: |
+          jq --slurpfile d decision1.json '.state = $d[0].state' bridge-gate/fixtures/needs-fix.facts.json > facts2.json
+          jq -n --arg allow_fixture test-fixture-run --slurpfile facts facts2.json --slurpfile cfg bridge-gate/config.json -f bridge-gate/gate.jq > decision2.json
+          jq -c '{decision, reason, duplicate, handoff}' decision2.json
+          jq -e '.decision == "WAIT" and .reason == "HANDOFF_IN_FLIGHT" and .duplicate == true and .handoff == null and (.state.attempts | length) == 1' decision2.json > /dev/null
+          echo "handoffs issued in this run: $(jq -s '[.[] | select(.handoff != null)] | length' decision1.json decision2.json) (expected 1)"
+
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "### bridge-gate-fixture: TEST FIXTURE, dry run"
+            echo "Synthetic facts only. No AI service, no GitHub writes, no label."
+            echo ""
+            echo "- Control (normal handling): \`$(jq -r '.decision + " / " + .reason + " " + (.problems | tostring)' rejected.json 2>/dev/null || echo not-run)\`"
+            echo "- Event 1: \`$(jq -r '.decision + " / " + .reason + ", attempt " + (.handoff.attempt | tostring) + " of " + (.handoff.of | tostring) + ", simulated handoff"' decision1.json 2>/dev/null || echo not-run)\`"
+            echo "- Event 2 (duplicate): \`$(jq -r '.decision + " / " + .reason + ", duplicate " + (.duplicate | tostring) + ", handoff " + (.handoff | tostring)' decision2.json 2>/dev/null || echo not-run)\`"
+          } >> "$GITHUB_STEP_SUMMARY"

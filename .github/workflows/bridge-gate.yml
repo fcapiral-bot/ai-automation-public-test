@@ -1,0 +1,133 @@
+# bridge-gate: event-driven gate for the Codex review -> Claude fix loop.
+#
+# SIMULATED HANDOFF ONLY. This workflow never starts Claude, never calls Codex and holds no
+# secrets beyond the automatic GITHUB_TOKEN. For each relevant PR event it re-reads GitHub
+# (bridge-gate/collect.sh, read-only), decides with one pure jq program (bridge-gate/gate.jq)
+# and, when a fix is due, only LOGS the handoff. The real handoff, applying the label that a
+# Claude cloud Routine listens for, is present but gated behind the repository variable
+# BRIDGE_HANDOFF_MODE == 'label', which is not set, AND by `real_handoff_enabled: true` in
+# bridge-gate/config.json as read from the DEFAULT BRANCH (not the PR branch); unreadable = locked.
+# See bridge-gate/README.md and ROUTINE.md.
+#
+# It cannot merge, deploy, push, approve, request reviews or edit files. Its only writes are the
+# PR comments and (when the variable is set) the one handoff label. State lives in one bot-authored
+# PR comment; concurrency serialises runs per PR.
+name: bridge-gate (event-driven, simulated handoff only)
+
+on:
+  pull_request:
+    types: [synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted]
+  issue_comment:
+    types: [created, edited]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request to re-evaluate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: read
+  statuses: read
+  actions: read
+
+concurrency:
+  group: bridge-gate-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    # issue_comment fires for every comment: only Codex's own comments on pull requests proceed.
+    if: >-
+      github.repository == 'fcapiral-bot/ai-automation-public-test' &&
+      (github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      KILL_SWITCH: ${{ vars.BRIDGE_KILL_SWITCH }}
+      HANDOFF_MODE: ${{ vars.BRIDGE_HANDOFF_MODE }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Collect evidence (read-only)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          COMMENT_UPDATED: ${{ github.event.comment.updated_at }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request_review) key="review:$REVIEW_ID" ;;
+            pull_request) key="head:$HEAD_SHA" ;;
+            issue_comment) key="comment:$COMMENT_ID@$COMMENT_UPDATED" ;;
+            *) key="" ;;
+          esac
+          EVENT_KEY="$key" bridge-gate/collect.sh > facts.json
+
+      - name: Decide
+        run: jq -n --slurpfile facts facts.json --slurpfile cfg bridge-gate/config.json -f bridge-gate/gate.jq > decision.json
+
+      # A push between evaluation and here makes the decision stale: stop before anything is written.
+      - name: Guard (head unchanged)
+        run: bridge-gate/guard.sh decision.json
+
+      # Write-ahead: the state is saved BEFORE any handoff, so a failed write means no handoff.
+      - name: Persist state
+        run: |
+          [ "$(jq -r .state_changed decision.json)" = true ] || exit 0
+          jq -r --arg kind state --slurpfile cfg bridge-gate/config.json -f bridge-gate/render.jq decision.json > body.txt
+          id=$(jq -r '.state_comment_id // empty' facts.json)
+          if [ -n "$id" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@body.txt > /dev/null
+          else gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@body.txt > /dev/null; fi
+
+      - name: Notify on READY, BLOCKED, MAX_ATTEMPTS or USAGE_STOP
+        run: |
+          [ "$(jq -r .notify decision.json)" = true ] || exit 0
+          jq -r --arg kind notify --slurpfile cfg bridge-gate/config.json -f bridge-gate/render.jq decision.json > note.txt
+          gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@note.txt > /dev/null
+
+      - name: Handoff (SIMULATED, log only)
+        if: ${{ vars.BRIDGE_HANDOFF_MODE != 'label' }}
+        run: |
+          jq -r 'select(.handoff != null) | "SIMULATED HANDOFF: would add label \"" + .handoff.label + "\" to PR #" + (.handoff.pr | tostring)
+            + " for head " + .handoff.head[0:7] + " (attempt " + (.handoff.attempt | tostring) + "/" + (.handoff.of | tostring) + "). Nothing was started."' decision.json
+          [ "$(jq -r .clear_label decision.json)" = true ] && echo "SIMULATED: would remove the handoff label (a newer head superseded the attempt)"
+          exit 0
+
+      # NOT ACTIVE: runs only when the repository variable BRIDGE_HANDOFF_MODE is exactly 'label'.
+      # Applying the label is the whole handoff: a Claude cloud Routine fires on it (bridge-gate/ROUTINE.md).
+      - name: Handoff (REAL label, gated by BRIDGE_HANDOFF_MODE=label)
+        if: ${{ vars.BRIDGE_HANDOFF_MODE == 'label' }}
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          gh api -H 'Accept: application/vnd.github.raw+json' "repos/$REPO/contents/bridge-gate/config.json?ref=$DEFAULT_BRANCH" 2>/dev/null | jq -e '.real_handoff_enabled == true' > /dev/null 2>&1 || { echo "REAL handoff is locked off (real_handoff_enabled is not true in bridge-gate/config.json on the default branch, or it could not be read); doing nothing."; exit 0; }
+          bridge-gate/guard.sh decision.json
+          label=$(jq -r .labels.needs_fix bridge-gate/config.json)
+          enc=$(jq -rn --arg l "$label" '$l | @uri')
+          if [ "$(jq -r .clear_label decision.json)" = true ]; then
+            gh api -X DELETE "repos/$REPO/issues/$PR_NUMBER/labels/$enc" > /dev/null || true
+          fi
+          if [ "$(jq -r '.handoff != null' decision.json)" = true ]; then
+            gh api -X POST "repos/$REPO/issues/$PR_NUMBER/labels" -f "labels[]=$label" > /dev/null
+          fi
+
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "### bridge-gate"
+            jq -r '"Decision: `" + .decision + "` (" + .reason + ") · duplicate event: " + (.duplicate | tostring)
+              + " · handoff: " + (if .handoff == null then "none" else "attempt " + (.handoff.attempt | tostring) + " (" + .handoff.mode + ")" end)' decision.json
+          } >> "$GITHUB_STEP_SUMMARY"
