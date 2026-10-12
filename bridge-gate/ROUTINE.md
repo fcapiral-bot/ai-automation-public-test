@@ -35,10 +35,12 @@ repository; they have not been tested here, and Codex is not confirmed to be ena
    a second human account), path protection exists, and the automation's identity can neither merge nor edit the ruleset.
 5. You accept that routines belong to **your** claude.ai account: commits and comments appear as you, and
    runs draw on your seat's usage.
-6. **A lease-expiry watchdog exists, or you knowingly accept manual-only timeouts for a supervised pilot.** Nothing runs the gate when a
-   lease expires (`README.md` Known limitations, `SECURITY.md` S15). Until a bounded scheduled watchdog is built, a stuck attempt is
-   noticed only when another event arrives or you run the workflow by hand (`workflow_dispatch`, `pr_number`). **This is a documented
-   blocker for unattended activation.** It was deferred on purpose and is not implemented.
+6. **The lease-expiry watchdog works.** `bridge-watchdog.yml` is merged and was seen, in `E2E-TEST.md` step 9, to time out an expired
+   lease. It is inert until `BRIDGE_HANDOFF_MODE=label` and runs only from the default branch; it was never run on a schedule here
+   (`SECURITY.md` S15). Without it a stuck attempt is noticed only when another event arrives or you run the workflow by hand
+   (`workflow_dispatch`, `pr_number`).
+7. **You have decided what identity the Routine acts as** (`SECURITY.md` S18): it acts as you, and you are an admin here.
+   Nothing technical stops it from merging a PR except a required human approval (precondition 4); its prompt only forbids it.
 
 ## 1. Create the labels (repository write: do it by hand)
 
@@ -51,11 +53,13 @@ repository; they have not been tested here, and Codex is not confirmed to be ena
 * **Environment**: Default (Trusted network). Add no environment variables or secrets.
 * **Connectors**: remove all of them.
 * **Trigger**: add exactly one. GitHub event → repository `fcapiral-bot/ai-automation-public-test` → event **Pull request**,
-  action **labeled** → filters: *Labels* includes `bridge:needs-fix` and *Is draft* is `false`.
+  action **labeled** → filters: *Labels* includes `bridge:needs-fix`, *Is draft* is `false` and *Head branch* starts with `claude/`.
+  (A routine pushes only to `claude/`-prefixed branches by default, and the prompt refuses any other head branch, so a PR from another
+  branch, such as PR #2, can never be touched. Do not turn on "allow unrestricted branch pushes".)
   No schedule trigger and no API trigger (an API trigger needs a bearer token; do not create one).
 * GitHub events are subject to per-routine and per-account hourly caps, and events beyond the cap are dropped.
-  A dropped event looks like a stuck attempt. It is noticed, as `BLOCKED / HANDOFF_TIMEOUT` and never as a retry, only when the gate is
-  next evaluated after the lease: another event, or a manual `workflow_dispatch` (there is no watchdog, see precondition 6).
+  A dropped event looks like a stuck attempt. It is noticed, as `BLOCKED / HANDOFF_TIMEOUT` and never as a retry, when the gate is
+  next evaluated after the lease: by the hourly watchdog, another event, or a manual `workflow_dispatch`.
 
 ## 3. Smoke-test the trigger by hand (still no gate handoff)
 
@@ -80,12 +84,15 @@ first real run end to end on a throwaway PR.
 **Unverified, test here first:** whether a label applied by `github-actions[bot]` fires the routine. Events made
 with the workflow token do not start *workflows*; routines are fired by the Claude GitHub App's webhook, which
 has not been tested with a bot-applied label. If it does not fire, nothing breaks: the attempt stays in flight for the 90-minute lease, and
-its timeout (`BLOCKED / HANDOFF_TIMEOUT`, label cleanup, notice) is recorded only when another event arrives or the workflow is
-dispatched manually after the lease (no watchdog; precondition 6). Do not "fix" this by creating a token or an API
+its timeout (`BLOCKED / HANDOFF_TIMEOUT`, label cleanup, notice) is recorded by the watchdog's next hourly run after the lease (or another event,
+or a manual `workflow_dispatch`). Do not "fix" this by creating a token or an API
 trigger without a separate decision.
 
-Also unverified: how the routine session is told which PR fired it. The prompt therefore finds the PR by label
-and checks it against the state comment, and stops unless exactly one PR matches and the head agrees.
+Also unverified: how the routine session is told which PR fired it. The docs say each event is an independent session whose
+checkout starts at the head commit of the PR that fired it. The prompt therefore takes `git rev-parse HEAD` as its identity and acts only
+on the one open PR whose head is exactly that commit, with the label and a `claude/` head branch, whose state comment has an in-flight attempt
+on that head. Other labelled PRs are ignored, so several PRs at once cannot be confused. If the checkout turns out not to be the
+PR head, the session stops and the attempt times out: the loop never works, but nothing unsafe happens. `E2E-TEST.md` steps 5 and 8 check it.
 
 ## 6. Codex re-review (the remaining blocker for an unattended loop)
 
@@ -104,14 +111,15 @@ for a human `@codex review` after each fix.
 | Stop one PR | Add the label `bridge:usage-stop` |
 | Go back to log-only | Set `BRIDGE_HANDOFF_MODE` to anything but `label`, or delete it |
 | Pause the routine itself | Switch it off at claude.ai/code/routines |
-| Evaluate a stuck or expired attempt now | Run the workflow by hand: Actions → bridge-gate → Run workflow, with `pr_number` (`workflow_dispatch`). Nothing else wakes the gate when a lease expires |
+| Evaluate a stuck or expired attempt now | Run the workflow by hand: Actions → bridge-gate → Run workflow, with `pr_number` (`workflow_dispatch`); otherwise the hourly watchdog does it |
+| Stop the watchdog | `BRIDGE_KILL_SWITCH` = `true`, or unset `BRIDGE_HANDOFF_MODE`, or disable the workflow |
 | Retry a head after a timeout, or reset a PR's attempts | Delete the bot's state comment on that PR (or push a new commit) |
 | Resume after usage resets | Clear the kill switch / label by hand. There is no automatic resume: nothing can confirm from a workflow that usage credits are still off |
 
 ## 8. Usage exhaustion
 
 When the seat is out of allowance and credits are off, the routine run is rejected and nothing is pushed. The
-gate sees no new head and nothing wakes it when the lease ends; the next evaluation after the 90-minute lease (another event, or a
+gate sees no new head; the next evaluation after the 90-minute lease (the hourly watchdog, another event, or a
 manual `workflow_dispatch`) blocks and notifies. Set `bridge:usage-stop` (or the
 kill switch) until the usage window resets, then clear it by hand. Do not turn usage credits on to "get
 through": that is exactly the spend this design is built to avoid.

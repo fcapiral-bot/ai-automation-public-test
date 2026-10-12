@@ -372,22 +372,24 @@ class DocumentationAndScopeTests(unittest.TestCase):
             self.assertRegex(flat, r"another event|a later event|next event", name)
         self.assertRegex(re.sub(r"\s+", " ", self.DOCS["routine-prompt.md"]), r"next gate evaluation|another event")
 
-    def test_the_missing_watchdog_is_recorded_as_a_blocker_for_unattended_activation(self):
+    def test_the_watchdog_is_recorded_as_mitigated_in_code_but_unverified_live(self):
         sec = re.sub(r"\s+", " ", self.DOCS["SECURITY.md"])
-        self.assertRegex(sec, r"\| S15 \| \*\*High for unattended activation\*\* \|.*watchdog.*\*\*Open\. Documented blocker for unattended activation\.\*\*", "S15 row")
-        self.assertRegex(sec, r"unattended")
+        self.assertRegex(sec, r"\| S15 \| \*\*High for unattended activation\*\* until verified live \|.*\*\*Mitigated in code\. Live behaviour UNVERIFIED", "S15 row")
+        self.assertNotRegex(sec, r"S15.*\*\*Open\. Documented blocker for unattended activation\.\*\*")
+        self.assertRegex(sec, r"best-effort liveness, not a safety control")
         rt = re.sub(r"\s+", " ", self.DOCS["ROUTINE.md"])
         self.assertRegex(rt, r"watchdog")
-        self.assertRegex(re.sub(r"\s+", " ", self.DOCS["SECURITY.md"].split("## Before the real handoff is enabled")[1]), r"watchdog")
+        self.assertRegex(re.sub(r"\s+", " ", self.DOCS["SECURITY.md"].split("## Before the real handoff is enabled")[1]), r"E2E-TEST\.md")
 
     def test_the_duplicate_notification_scenario_is_documented(self):
         flat = re.sub(r"\s+", " ", self.DOCS["SECURITY.md"])
         self.assertRegex(flat, r"S14.*duplicate", "S14 documents what can still be duplicated")
 
-    def test_no_scheduler_was_added_and_the_lock_and_ci_requirement_are_unchanged(self):
+    def test_only_the_watchdog_is_scheduled_and_the_lock_and_ci_requirement_are_unchanged(self):
         for path in (g.ROOT / ".github" / "workflows").glob("*.yml"):
             code = "\n".join(l for l in path.read_text().splitlines() if not l.lstrip().startswith("#"))
-            self.assertNotRegex(code, r"(?m)^\s*schedule:|cron:", path.name)
+            if path.name != "bridge-watchdog.yml":
+                self.assertNotRegex(code, r"(?m)^\s*schedule:|cron:", path.name)
         cfg = json.loads((g.GATE / "config.json").read_text())
         self.assertIs(cfg["real_handoff_enabled"], False); self.assertIs(cfg["require_ci"], True); self.assertEqual(cfg["max_attempts"], 3)
 

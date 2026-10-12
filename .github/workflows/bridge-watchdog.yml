@@ -1,0 +1,43 @@
+# bridge-watchdog: ends an expired handoff lease. Hourly, it asks the gate to re-evaluate any open pull request whose recorded
+# attempt is still in flight past its lease (bridge-gate/watchdog.sh). It decides nothing and writes nothing but that dispatch; the
+# gate itself records the timeout, clears the label and notifies. It cannot merge, push, approve, label or edit files.
+#
+# INERT until the handoff is activated: scheduled runs proceed only when BRIDGE_HANDOFF_MODE == 'label' and the kill switch is not on.
+# A manual run (workflow_dispatch) is always allowed. `actions: write` is needed only to dispatch bridge-gate.yml; it is not a
+# merge or administration permission. Schedules run only from the default branch and can be late; GitHub disables scheduled workflows
+# in a public repository after 60 days without repository activity (see bridge-gate/README.md).
+name: bridge-watchdog (lease expiry, re-evaluates only)
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: write
+
+concurrency:
+  group: bridge-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    if: >-
+      github.repository == 'fcapiral-bot/ai-automation-public-test' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      vars.BRIDGE_KILL_SWITCH != 'true' &&
+      (github.event_name == 'workflow_dispatch' || vars.BRIDGE_HANDOFF_MODE == 'label')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Ask the gate to re-evaluate expired leases
+        run: bridge-gate/watchdog.sh

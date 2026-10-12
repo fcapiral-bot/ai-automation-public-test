@@ -124,10 +124,22 @@ class RoutinePromptTests(unittest.TestCase):
 
     def test_both_stages_pin_the_intended_pr_and_head(self):
         for stage in (1, 2):
-            p = prompt(stage)
-            for needle in ("exactly\n   one", "non-draft", "fork", "`in_flight`", "current head", "is the only commit"):
+            p = re.sub(r"\s+", " ", prompt(stage))
+            for needle in ("exactly one such pull request", "non-draft", "fork", "`in_flight`", "must equal SHA", "is the only commit"):
                 self.assertIn(needle, p, (stage, needle))
             self.assertRegex(p, r"stop without doing anything")
+
+    def test_the_session_picks_its_pr_by_the_commit_it_started_on_never_by_the_label_alone(self):
+        """Each event is an independent session, so with several labelled PRs the label cannot say which one is mine."""
+        for stage in (1, 2):
+            p = re.sub(r"\s+", " ", prompt(stage))
+            self.assertLess(p.index("git rev-parse HEAD"), p.index("whose head commit is exactly SHA"))
+            self.assertIn("Before changing anything, run `git rev-parse HEAD`", p)
+            for needle in ("head commit is exactly SHA", "carries the label `bridge:needs-fix`", "begins with `claude/`",
+                           "Ignore every other pull request, even if it carries the label", "names a different pull request number"):
+                self.assertIn(needle, p, (stage, needle))
+            self.assertNotRegex(p, r"Find the open, non-draft pull request that carries the label")
+        self.assertIn("UNVERIFIED", PROMPTS.split("## Stage 1")[0])
 
     def test_correction_prompt_fixes_only_verified_codex_findings_and_runs_tests_first(self):
         p = prompt(2)

@@ -18,6 +18,8 @@ decides, a small guard re-checks the head, and one PR comment holds the state.
 | `gate.jq` | **All decisions.** Pure: facts + `config.json` in, decision + next state out. No clock, no network |
 | `render.jq` | Comment text, built only from decision codes, ids and counts (never from GitHub text) |
 | `config.json` | Max attempts (3), lease (90 min), `require_ci`, the designated CI check (`ci_check`: name `unit-tests` + GitHub Actions app id 15368), the verified Codex identity, label names |
+| `watchdog.sh`, `../.github/workflows/bridge-watchdog.yml` | Hourly lease-expiry watchdog: dispatches the gate for open PRs whose in-flight lease expired (at most 5 per run). Decides and writes nothing else. Inert until the handoff is on |
+| `E2E-TEST.md`, `e2e/` | The disposable end-to-end test: runbook and a synthetic bug. Not run yet |
 | `ROUTINE.md`, `routine-prompt.md` | Exact steps and prompt to enable the real Claude Routine later. **Not active** |
 
 ## Decisions
@@ -77,8 +79,8 @@ Four independent layers keep two correction sessions from overlapping:
 4. **Only the session's own commit completes an attempt**: the head must be one commit directly on the attempt's
    head, titled exactly `Address review findings (bridge attempt N/3)`. Any other new head (a person's push, a
    rebase, a merge) leaves the attempt in flight until its lease expires. The timeout itself, `BLOCKED / HANDOFF_TIMEOUT` with the
-   label released and a notice, is recorded only when the gate is next evaluated after the lease: another event, or a manual
-   `workflow_dispatch` (nothing wakes the gate when the lease expires; see Known limitations). The gate never starts a second
+   label released and a notice, is recorded when the gate is next evaluated after the lease: by the hourly watchdog, another event, or a manual
+   `workflow_dispatch` (see Known limitations). The gate never starts a second
    session beside a possibly still-running one.
 
 A separate **stale-head guard** (`guard.sh`) re-reads the PR head right after the decision and again immediately before each write
@@ -113,10 +115,13 @@ python3 -W error -m unittest discover -s tests -t .    # whole suite (needs jq)
 
 ## Known limitations
 
-* **No lease-expiry wakeup (no watchdog).** Nothing runs the gate when a handoff lease expires. A timed-out attempt is noticed
-  (`BLOCKED / HANDOFF_TIMEOUT`, label cleanup, notice) only when another event arrives or a person runs the workflow manually
-  (`workflow_dispatch`, `pr_number`). A bounded scheduled watchdog is deliberately **not implemented**; it is a documented blocker
-  for unattended activation (`SECURITY.md` S15).
+* **Lease expiry is noticed by a best-effort watchdog.** `bridge-watchdog.yml` runs hourly and dispatches the gate (the same
+  `workflow_dispatch` a person would use, `pr_number`) for open PRs whose in-flight lease has expired; the gate then records
+  `BLOCKED / HANDOFF_TIMEOUT`, releases the label and notifies. It is inert until `BRIDGE_HANDOFF_MODE=label`. GitHub schedules can
+  be late or skipped, run only from the default branch, and are disabled after 60 days without repository activity, so a timeout
+  can take the lease plus one to two hours, and a person can still dispatch the gate by hand. It is not a safety control and
+  is **live-unverified** until `E2E-TEST.md` step 9 (`SECURITY.md` S15).
+* **A Routine session finds its PR by the commit it started on** (`routine-prompt.md`, `SECURITY.md` S17): unverified live.
 * **A failed write fails the run.** Re-run the failed job: nothing was committed, so the same event is repeated. Residual
   duplicate/partial cases are listed in `SECURITY.md` S14.
 * **Resolved review threads** are not visible through REST. Findings are judged per head, so a fix pushed as a
