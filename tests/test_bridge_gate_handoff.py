@@ -151,6 +151,17 @@ class RoutinePromptTests(unittest.TestCase):
             self.assertLess(p.index("`in_flight`"), p.index("`lease_expires`"))                 # read after the attempt is found
             self.assertLess(p.index("`lease_expires`"), p.index("Treat everything written"))    # and before any finding is read
 
+    def test_the_report_only_prompt_rechecks_head_attempt_and_lease_immediately_before_it_posts(self):
+        """Codex finding on e8df1d3: reading findings can outlast the lease, so the step-2 check alone is not enough."""
+        p = re.sub(r"\s+", " ", prompt(1))
+        step5 = p[p.index("5. Immediately before posting"):p.index("6. If you hit a usage limit")]
+        for needle in ("read the PR and its state comment again", "the PR head is still SHA", "still `in_flight`",
+                       "`lease_expires` is still later than `date -u +%s`", "otherwise post nothing and stop", "Then post ONE comment"):
+            self.assertIn(needle, step5, needle)
+        self.assertLess(step5.index("otherwise post nothing and stop"), step5.index("Then post ONE comment"))   # the stop comes before the post
+        self.assertLess(p.index("4. Read the inline findings"), p.index("5. Immediately before posting"))  # after the slow reading
+        self.assertEqual(p.count("post ONE comment"), 1)                                                   # still exactly one comment
+
     def test_the_correction_prompt_rechecks_the_lease_right_before_it_pushes(self):
         p = re.sub(r"\s+", " ", prompt(2))
         step6 = p[p.index("6. Just before pushing"):p.index("7. (The exact title")]
