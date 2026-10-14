@@ -17,7 +17,7 @@ more than three attempts; a second session on the same attempt; an Actions run y
 
 Usage credits OFF org-wide; Routines and cloud sessions allowed; Claude GitHub App installed on this repository; Codex enabled for
 this repository with purchased credits off (automatic review on every push was verified in the earlier private test repository);
-the decisions on S10 and S18 (`SECURITY.md`) taken and written down; this change merged by you (both prompts now stop on an expired lease). Until S10 and S18 are decided
+the decisions on S10 and S18 (`SECURITY.md`) taken and written down; this change merged by you (both prompts now run THE GUARD before every write). Until S10 and S18 are decided
 this test must not start: the Routine acts as your admin identity.
 
 ## 2. Labels and Routine (Stage 1 prompt)
@@ -50,7 +50,13 @@ history and still count.** A and B have 2 of 3 attempts left, and the same head 
   in-flight, unexpired attempt acts on it, and its report would read as a real handoff when it is not.
 * **A lease that has run out proves nothing until the gate has evaluated it.** After `lease_expires` the state still says `in_flight`
   until the gate runs again (another event, a manual dispatch, or the watchdog once the handoff is on). Both prompts now stop when the
-  recorded lease is missing, not a number, or already past, so a session can never act on an expired attempt. Never read a result off
+  recorded lease is missing, not a number, or already past, and run THE GUARD (fresh reads of the PR head, the attempt's status and lease, and
+  any duplicate comment) immediately before every write: each comment, and the push (the guard runs right before the push, so after the commit exists). A failed
+  guard writes nothing and posts no comment about it, so an expired attempt gets no failure comment. This narrows the race window; it is not
+  atomic with the watchdog or the gate. A session can still pass the guard a moment before the lease ends and push a moment after (the
+  gap between its last check and the push itself). The gate bounds that outcome: the attempt is already counted, the late commit is judged
+  as a new head and counted too, and at most one extra commit can land per attempt, never a fourth attempt. In a test result, treat a
+  comment or commit that appears within seconds of `lease_expires` as that race, not as a bug. Never read a result off
   an in-flight attempt whose lease has passed: dispatch the gate first and read the new state.
 * **Three attempts per PR, same head never twice.** Plan for C: attempt 1 is the Stage 1 report-only run (it pushes nothing, so it times
   out and still counts), attempt 2 is the Stage 2 correction on a new head, attempt 3 is the spare. A timeout or a failed correction is a

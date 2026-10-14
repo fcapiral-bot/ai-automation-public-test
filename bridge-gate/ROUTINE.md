@@ -57,6 +57,9 @@ repository; they have not been tested here, and Codex is not confirmed to be ena
   (A routine pushes only to `claude/`-prefixed branches by default, and the prompt refuses any other head branch, so a PR from another
   branch, such as PR #2, can never be touched. Do not turn on "allow unrestricted branch pushes".)
   No schedule trigger and no API trigger (an API trigger needs a bearer token; do not create one).
+* **The prompts guard every write against an expired attempt** (`routine-prompt.md`, THE GUARD). It narrows the race window; it is not
+  atomic with the watchdog or the gate, so a comment or commit landing within seconds of `lease_expires` can still happen. The gate counts it
+  and the three-attempt limit holds (`SECURITY.md` S19).
 * GitHub events are subject to per-routine and per-account hourly caps, and events beyond the cap are dropped.
   A dropped event looks like a stuck attempt. It is noticed, as `BLOCKED / HANDOFF_TIMEOUT` and never as a retry, when the gate is
   next evaluated after the lease: by the hourly watchdog, another event, or a manual `workflow_dispatch`.
