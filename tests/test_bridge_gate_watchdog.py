@@ -119,6 +119,46 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(fx.run(MAX_DISPATCH="2").returncode, 0)
         self.assertEqual(fx.dispatched()[5:], [1, 2])
 
+    def test_stuck_prs_beyond_the_cap_take_turns_instead_of_the_same_five_every_hour(self):
+        """Codex finding on efd40a9: the gate cannot clear these (e.g. persistent EVIDENCE_UNAVAILABLE), so they stay expired."""
+        for stuck in (8, 12, 23):
+            fx = self.fake(tuple(range(1, stuck + 1)))
+            for n in range(1, stuck + 1):
+                fx.state_on(n, state(attempt()))
+            seen = set()
+            for hour in range(-(-stuck // 5)):                      # ceil(stuck / 5) hourly runs
+                before = len(fx.dispatched())
+                out = fx.run(NOW=str(g.NOW + 3600 * hour))
+                self.assertEqual(out.returncode, 0, out.stderr)
+                batch = fx.dispatched()[before:]
+                self.assertEqual(len(batch), min(5, stuck), (stuck, hour))
+                self.assertEqual(len(set(batch)), len(batch), "no PR twice in one run")
+                seen |= set(batch)
+            self.assertEqual(seen, set(range(1, stuck + 1)), "every expired PR was dispatched within ceil(n/5) runs (%d stuck)" % stuck)
+
+    def test_consecutive_runs_do_not_start_from_the_same_pr(self):
+        fx = self.fake(tuple(range(1, 9)))
+        for n in range(1, 9):
+            fx.state_on(n, state(attempt()))
+        firsts = []
+        for hour in range(4):
+            before = len(fx.dispatched())
+            fx.run(NOW=str(g.NOW + 3600 * hour))
+            firsts.append(fx.dispatched()[before])
+        self.assertGreater(len(set(firsts)), 1, firsts)
+
+    def test_rotation_never_exceeds_the_cap_or_dispatches_a_pr_that_is_not_expired(self):
+        fx = self.fake(tuple(range(1, 10)))
+        for n in range(1, 10):
+            fx.state_on(n, state(attempt(lease=g.NOW + 600) if n % 3 == 0 else attempt()))
+        for hour in range(6):
+            before = len(fx.dispatched())
+            fx.run(NOW=str(g.NOW + 3600 * hour) if hour else str(g.NOW))
+            batch = fx.dispatched()[before:]
+            self.assertLessEqual(len(batch), 5)
+            if hour == 0:
+                self.assertTrue(all(n % 3 for n in batch), batch)   # PRs 3, 6, 9 are still inside their lease
+
     def test_a_failed_dispatch_or_unreadable_pr_is_reported_but_does_not_stop_the_others(self):
         fx = self.fake((7, 8))
         fx.state_on(7, state(attempt()))

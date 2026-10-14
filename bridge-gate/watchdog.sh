@@ -17,9 +17,8 @@ scan=${SCAN_LIMIT:-100}
 author=$(jq -r .state_author "$CFG") && marker=$(jq -r .state_marker "$CFG") || exit 1
 
 prs=$("$GH" api --paginate "repos/$REPO/pulls?state=open&per_page=100" --jq '.[].number') || { echo "watchdog: cannot list pull requests" >&2; exit 1; }
-failed=0; sent=0
+failed=0; sent=0; cands=()
 for n in $(printf '%s\n' "$prs" | grep -E '^[1-9][0-9]{0,8}$' | head -n "$scan"); do
-  ((sent >= max)) && { echo "watchdog: dispatch limit ($max) reached; the rest wait for the next run"; break; }
   comments=$("$GH" api --paginate "repos/$REPO/issues/$n/comments" --jq '.[] | {login: .user.login, type: .user.type, first: ((.body // "") | split("\n")[0])}') ||
     { echo "watchdog: cannot read PR #$n comments; skipped" >&2; failed=1; continue; }
   # Exactly one bot-authored state comment (a person can forge the marker, not the author); an in-flight attempt whose lease has run out.
@@ -27,7 +26,15 @@ for n in $(printf '%s\n' "$prs" | grep -E '^[1-9][0-9]{0,8}$' | head -n "$scan")
     [.[] | select(.login == $a and .type == "Bot" and (.first | startswith($m))) | .first | ltrimstr($m) | rtrimstr(" -->") | try fromjson catch null]
     | select(length == 1) | .[0] | select(type == "object")
     | [.attempts[]? | select(.status == "in_flight" and (.lease_expires | type) == "number" and .lease_expires <= $now)] | length')
-  [[ ${expired:-0} -gt 0 ]] || continue
+  [[ ${expired:-0} -gt 0 ]] && cands+=("$n")
+done
+# More expired leases than the cap: start each run's window where the last hour's ended, so PRs the gate cannot clear (and that therefore
+# stay expired) take turns instead of the same first few using every run. Stateless: the hour number sets the window.
+total=${#cands[@]}
+((total > 0)) && start=$(((now / 3600 * max) % total)) || start=0
+for ((k = 0; k < total; k++)); do
+  n=${cands[$(((start + k) % total))]}
+  ((sent >= max)) && { echo "watchdog: dispatch limit ($max) reached; the others are rotated in on later runs"; break; }
   echo "watchdog: PR #$n has an expired in-flight lease; asking the gate to re-evaluate it"
   if "$GH" api -X POST "repos/$REPO/actions/workflows/bridge-gate.yml/dispatches" -f "ref=$DEFAULT_BRANCH" -f "inputs[pr_number]=$n" >/dev/null; then sent=$((sent + 1))
   else echo "watchdog: dispatch for PR #$n failed" >&2; failed=1; fi
