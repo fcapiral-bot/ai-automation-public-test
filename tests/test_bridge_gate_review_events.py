@@ -83,7 +83,7 @@ class TriggerTests(unittest.TestCase):
         for name, block in step_blocks().items():
             if "run:" in block:
                 self.assertNotIn("${{", script_of(name), name)
-        self.assertNotRegex(CODE, r"(?m)^\s*schedule:|cron:")                         # still no watchdog
+        self.assertNotRegex(CODE, r"(?m)^\s*schedule:|cron:")                         # the GATE has no schedule; only bridge-watchdog.yml does (tests/test_bridge_gate_watchdog.py)
 
 
 class EventKeyTests(unittest.TestCase):
@@ -215,7 +215,8 @@ class DocumentationTests(unittest.TestCase):
         cfg = json.loads((g.GATE / "config.json").read_text())
         self.assertIs(cfg["real_handoff_enabled"], False); self.assertIs(cfg["require_ci"], True); self.assertEqual(cfg["max_attempts"], 3)
         sec = re.sub(r"\s+", " ", (g.GATE / "SECURITY.md").read_text())
-        self.assertRegex(sec, r"\| S15 \| \*\*High for unattended activation\*\*.*\*\*Open\. Documented blocker for unattended activation\.\*\*")
+        self.assertRegex(sec, r"\| S15 \| \*\*High for unattended activation\*\* until verified live \|.*\*\*Mitigated in code\. Live behaviour UNVERIFIED")
+        self.assertRegex(sec, r"\| S18 \| \*\*High for unattended AI execution\*\* \|.*\*\*Open\. Not fixable in code\.\*\*")
 
 
 if __name__ == "__main__":

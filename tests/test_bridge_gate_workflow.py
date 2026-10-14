@@ -162,7 +162,7 @@ class StaticTests(unittest.TestCase):
     def test_the_gate_is_small(self):
         self.assertLess(len(TEXT.splitlines()), 160)
         self.assertLess(len((g.GATE / "gate.jq").read_text().splitlines()), 160)
-        self.assertEqual(sorted(p.name for p in g.GATE.glob("*.sh")), ["collect.sh", "guard.sh", "label.sh"])
+        self.assertEqual(sorted(p.name for p in g.GATE.glob("*.sh")), ["collect.sh", "guard.sh", "label.sh", "watchdog.sh"])
 
     def test_config_defaults_are_the_documented_safe_ones(self):
         c = g.CONFIG
