@@ -62,7 +62,7 @@ class GuardTextTests(unittest.TestCase):
                            "(a) `date -u +%s` gives the current time", "(b) P is still open and non-draft",
                            "its head is still SHA", "(c) P still has exactly one bot state comment",
                            "attempt N still has status `in_flight`", "`head` SHA", "`lease_expires` later than the time from (a)",
-                           "(d) P has no comment yet that starts with"):
+                           "(d) only when the write is a comment: P has no comment yet that starts with"):
                 self.assertIn(needle, guard, (stage, needle))
             self.assertIn("any read fails or is ambiguous, or anything is false, THE GUARD FAILS", p)
             self.assertRegex(p, r"THE GUARD FAILS: write nothing,( push nothing,)? ?(post no comment about it, )?and stop|THE GUARD FAILS: write nothing and stop, without any comment about it")
@@ -192,8 +192,20 @@ class ReplayTests(unittest.TestCase):
     def test_a_repeated_run_posts_at_most_what_the_text_allows(self):
         """Duplicate execution: the second session's guard (d) sees the first one's comment, and a rejected push is a stop."""
         p = flat(2)
-        self.assertIn("(d) P has no comment yet that starts with the text you are about to post", p)
+        self.assertIn("(d) only when the write is a comment: P has no comment yet that starts with the text you are about to post", p)
         self.assertIn("rejected push", p)
+
+    def test_the_duplicate_condition_cannot_make_the_commit_or_push_guards_unpassable(self):
+        """Codex finding on 8d756ce: with no text to post, a literal reading of (d) would fail every non-comment guard."""
+        for stage in (1, 2):
+            p = flat(stage)
+            self.assertIn("(this condition does not apply to the commit and the push)", p, stage)
+            self.assertNotIn("(d) P has no comment yet", p, stage)
+        p = flat(2)
+        # the guards before the commit and before the push name no text, so (d) must be a comment-only condition
+        self.assertIn("run THE GUARD before committing", p)
+        self.assertIn("Immediately before `git push`, run THE GUARD again", p)
+        self.assertLess(p.index("(d) only when the write is a comment"), p.index("run THE GUARD before committing"))
 
 
 class LostRaceOutcomeTests(unittest.TestCase):
