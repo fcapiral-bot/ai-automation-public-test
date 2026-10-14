@@ -92,7 +92,7 @@ class RunbookTests(unittest.TestCase):
     def test_the_runbook_keeps_every_safety_rule(self):
         for needle in ("NOT RUN", "claude/e2e-synthetic-*", "Never label PR #2", "Never merge a test PR", "BRIDGE_KILL_SWITCH=true",
                        "Credits must be $0", "**non-draft**", "unmerged", "Do not create a token or an API trigger",
-                       "S10 and S18", "Stage 1 report-only", "Stage 2 correction", "Address review findings (bridge attempt 1/3)",
+                       "S10 and S18", "Stage 1 report-only", "Stage 2 correction", "Address review findings (bridge attempt 2/3)",
                        "bridge-watchdog", "MAX_ATTEMPTS", "HANDOFF_TIMEOUT", "READY", "real_handoff_enabled"):
             self.assertIn(needle, RUNBOOK, needle)
 
@@ -107,8 +107,37 @@ class RunbookTests(unittest.TestCase):
     def test_the_stage_one_prompt_comes_before_the_correction_prompt_and_the_locks_open_late(self):
         self.assertLess(RUNBOOK.index("Stage 1 report-only"), RUNBOOK.index("## 7. Open both locks"))
         self.assertLess(RUNBOOK.index("## 7. Open both locks"), RUNBOOK.index("## 10. The correction loop"))
-        self.assertLess(RUNBOOK.index("## 10. The correction loop"), RUNBOOK.index("Stage 2 correction"))
+        self.assertLess(RUNBOOK.index("## 10. The correction loop"), RUNBOOK.index("**Stage 2 correction** prompt"))
         self.assertIn("`real_handoff_enabled` stays `false`", RUNBOOK)
+
+    def test_the_runbook_records_the_observed_simulation_history_and_keeps_every_counter(self):
+        for needle in ("Observed 2026-10-14", "PR #4", "PR #5", "`7c1446a`", "`6663826`", "BLOCKED / HANDOFF_TIMEOUT", "`timed_out`",
+                       "simulation history and still count", "2 of 3 attempts left", "same head can never get another attempt",
+                       "nothing reset"):
+            self.assertIn(needle, RUNBOOK, needle)
+        self.assertNotRegex(RUNBOOK, r"On PR A delete the bot's state comment|resets its attempt count on purpose")
+        self.assertRegex(RUNBOOK, r"never reset silently")
+        self.assertRegex(RUNBOOK, r"it is \*\*not\*\* part of this test")
+
+    def test_a_real_handoff_test_starts_on_a_fresh_pr_with_the_locks_already_open(self):
+        step7 = RUNBOOK[RUNBOOK.index("## 7. Open both locks"):RUNBOOK.index("## 8.")]
+        for needle in ("Close A and B **unmerged** first", "fresh PR C", "make-synthetic-branch.sh c", "**non-draft**",
+                       "do not delete any state comment", "BLOCKED / HANDOFF_LOCKED"):
+            self.assertIn(needle, step7, needle)
+        self.assertLess(step7.index("`BRIDGE_HANDOFF_MODE` ="), step7.index("**Then** create a fresh PR C"))
+
+    def test_stage_one_no_longer_expects_a_session_on_an_in_flight_attempt_to_stop(self):
+        step5 = RUNBOOK[RUNBOOK.index("## 5. Trigger"):RUNBOOK.index("## 6.")]
+        self.assertNotIn("No attempt is in flight (the gate recorded none)", RUNBOOK)
+        for needle in ("no attempt `in_flight`", "`timed_out`", "A (PR #4) only", "B (PR #5)", "stop at step 2", "an attempt was `in_flight` when you labelled"):
+            self.assertIn(needle, step5, needle)
+        self.assertIn("Read the state comment before every manual label", RUNBOOK)
+        self.assertIn("Add a label by hand only if no attempt is `in_flight`", RUNBOOK)
+
+    def test_expired_leases_are_explained_so_they_cannot_produce_a_misleading_result(self):
+        for needle in ("A lease that has run out proves nothing until the gate has evaluated it", "Both prompts now stop when the",
+                       "dispatch the gate first", "Three attempts per PR, same head never twice", "attempt **2/3**", "kept and counted"):
+            self.assertIn(needle, RUNBOOK, needle)
 
     def test_nothing_is_activated_by_this_change(self):
         self.assertIs(g.CONFIG["real_handoff_enabled"], False)
