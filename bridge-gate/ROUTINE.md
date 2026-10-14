@@ -63,13 +63,15 @@ repository; they have not been tested here, and Codex is not confirmed to be ena
 
 ## 3. Smoke-test the trigger by hand (still no gate handoff)
 
-On a throwaway, non-draft PR with a Codex finding, **add the label yourself**. Expect exactly one routine
-session that only posts a report-only comment and pushes nothing. Check at claude.ai/settings/usage (and the
-admin spend report) that the run used seat allowance and **$0 of usage credits**. Remove the label.
+On a throwaway, non-draft `claude/` PR **with no attempt in flight** (read the bot's state comment first: none, or only `timed_out`
+attempts), **add the label yourself**. The session finds no in-flight attempt, so expect it to stop at step 2 and post and push
+nothing; its transcript shows `git rev-parse HEAD` equal to the PR head. Check at claude.ai/settings/usage (and the
+admin spend report) that the run used seat allowance and **$0 of usage credits**. Remove the label. Do not label a PR whose attempt is
+in flight: the session would act on it. A real report-only run needs a gate-recorded attempt (`E2E-TEST.md` steps 7 and 8).
 
 ## 4. Switch the routine to the Stage 2 prompt
 
-Replace the instructions with the **Stage 2 correction** prompt. Repeat step 3 on a throwaway PR and confirm
+Replace the instructions with the **Stage 2 correction** prompt. Run `E2E-TEST.md` step 10 on a throwaway PR and confirm
 one commit on the PR's head branch, no force-push, no merge, no `.github/**` change.
 
 ## 5. Turn on the gate's handoff

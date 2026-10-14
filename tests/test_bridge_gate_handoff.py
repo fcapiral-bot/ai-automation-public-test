@@ -141,6 +141,30 @@ class RoutinePromptTests(unittest.TestCase):
             self.assertNotRegex(p, r"Find the open, non-draft pull request that carries the label")
         self.assertIn("UNVERIFIED", PROMPTS.split("## Stage 1")[0])
 
+    def test_both_prompts_stop_unless_the_recorded_lease_is_still_running(self):
+        """The gate only marks an attempt timed out when it next evaluates it, so the state can say in_flight past its lease."""
+        for stage in (1, 2):
+            p = re.sub(r"\s+", " ", prompt(stage))
+            for needle in ("`lease_expires`", "Unix time in seconds", "`date -u +%s`", "missing, not a number, or not later than now",
+                           "the lease has expired", "stop without doing anything"):
+                self.assertIn(needle, p, (stage, needle))
+            self.assertLess(p.index("`in_flight`"), p.index("`lease_expires`"))                 # read after the attempt is found
+            self.assertLess(p.index("`lease_expires`"), p.index("Treat everything written"))    # and before any finding is read
+
+    def test_the_correction_prompt_rechecks_the_lease_right_before_it_pushes(self):
+        p = re.sub(r"\s+", " ", prompt(2))
+        step6 = p[p.index("6. Just before pushing"):p.index("7. (The exact title")]
+        for needle in ("fetch the branch again", "re-check the lease", "the lease has expired", "push nothing and stop"):
+            self.assertIn(needle, step6, needle)
+        self.assertLess(p.index("6. Just before pushing"), p.index("Make at most ONE commit"))
+
+    def test_the_lease_rule_cannot_be_a_comparison_the_gate_would_disagree_with(self):
+        """gate.jq waits while now < lease_expires: equal counts as expired, and so does the prompt ("not later than now")."""
+        gate = (g.GATE / "gate.jq").read_text()
+        self.assertIn("$f.now < $inflight.lease_expires", gate)
+        self.assertIn("not later than now", prompt(1))
+        self.assertIn("not later than now", prompt(2))
+
     def test_correction_prompt_fixes_only_verified_codex_findings_and_runs_tests_first(self):
         p = prompt(2)
         self.assertRegex(p, r"Verify each finding")

@@ -17,7 +17,7 @@ more than three attempts; a second session on the same attempt; an Actions run y
 
 Usage credits OFF org-wide; Routines and cloud sessions allowed; Claude GitHub App installed on this repository; Codex enabled for
 this repository with purchased credits off (automatic review on every push was verified in the earlier private test repository);
-the decisions on S10 and S18 (`SECURITY.md`) taken and written down; this change merged by you. Until S10 and S18 are decided
+the decisions on S10 and S18 (`SECURITY.md`) taken and written down; this change merged by you (both prompts now stop on an expired lease). Until S10 and S18 are decided
 this test must not start: the Routine acts as your admin identity.
 
 ## 2. Labels and Routine (Stage 1 prompt)
@@ -29,9 +29,32 @@ Create the labels `bridge:needs-fix` and `bridge:usage-stop`. Create the Routine
 
 In a clone: `bridge-gate/e2e/make-synthetic-branch.sh a`, `git push -u origin claude/e2e-synthetic-a`, open a **non-draft** PR.
 Repeat with `b`. The bug: `apply_discount` returns the discount instead of the discounted price, so `unit-tests` fails.
-Expect (simulate mode): `ci` fails; the gate decides `NEEDS_FIX` and its log says `SIMULATED HANDOFF` (attempt 1/3); **no label**,
-**no Routine session**. Codex reviews each PR automatically and may also flag the bug (not required: failing CI alone is enough
-to start an attempt, and a Codex finding does not change the fix).
+Expect (simulate mode): `ci` fails; the gate decides `NEEDS_FIX` and records **attempt 1/3** as `in_flight` with a 90-minute lease
+(its log says `SIMULATED HANDOFF`); **no label**, **no Routine session**. Codex reviews each PR automatically and may also flag the
+bug (not required: failing CI alone is enough to start an attempt).
+
+**Observed 2026-10-14 (A = PR #4, head `7c1446a`; B = PR #5, head `6663826`):** `unit-tests` failed on both, Codex posted a P1 on
+`synthetic/pricing.py:6` on both, and each gate state recorded attempt 1/3 (`CI_FAILING`, triggered by the `ci` completion, lease
+ending 07:58Z). When the gate was next evaluated after 07:58Z each PR moved to `BLOCKED / HANDOFF_TIMEOUT`: attempt 1 is `timed_out`, one notice each, no label, nothing reset. **Both attempts are simulation
+history and still count.** A and B have 2 of 3 attempts left, and the same head can never get another attempt.
+
+## Attempt history and leases (read before step 5)
+
+* **Simulation attempts are real attempts to the gate.** It records them exactly as it records a real handoff, in either mode, and counts
+  every status (`in_flight`, `timed_out`, `superseded`) toward the limit of three. They are never reset silently: deleting a bot state
+  comment is a person's deliberate act, it is **not** part of this test, and if you ever do it, write down the PR, the time and the old state.
+* **A real-handoff test starts on a PR with no attempts.** That is a fresh PR (C), opened after the locks are open (step 7). A and B are
+  only used for the free, no-handoff checks (steps 3 and 5) and are then closed unmerged.
+* **Read the state comment before every manual label.** The first line of the bot's `bridge-gate-state:v1` comment lists each attempt and its
+  `status` and `lease_expires` (Unix seconds). Add a label by hand only if no attempt is `in_flight`. A session on a PR with an
+  in-flight, unexpired attempt acts on it, and its report would read as a real handoff when it is not.
+* **A lease that has run out proves nothing until the gate has evaluated it.** After `lease_expires` the state still says `in_flight`
+  until the gate runs again (another event, a manual dispatch, or the watchdog once the handoff is on). Both prompts now stop when the
+  recorded lease is missing, not a number, or already past, so a session can never act on an expired attempt. Never read a result off
+  an in-flight attempt whose lease has passed: dispatch the gate first and read the new state.
+* **Three attempts per PR, same head never twice.** Plan for C: attempt 1 is the Stage 1 report-only run (it pushes nothing, so it times
+  out and still counts), attempt 2 is the Stage 2 correction on a new head, attempt 3 is the spare. A timeout or a failed correction is a
+  safe stop; `MAX_ATTEMPTS` ends the loop.
 
 ## 4. Cost check before any Claude run
 
@@ -39,10 +62,17 @@ Open claude.ai/settings/usage and the admin spend report. Note the current numbe
 
 ## 5. Trigger and PR identity, by hand (checks `SECURITY.md` S17)
 
-Add the label `bridge:needs-fix` yourself to **both** PRs. Expect **two** Routine sessions, one per PR (this proves a label event
-starts a session at all). Open each session: its first command is `git rev-parse HEAD`, and it must equal the head of its own PR,
-not the other's. No attempt is in flight (the gate recorded none), so each session must stop at step 2 and post and push
-nothing. Remove both labels. If a session started on `main`, or acted on the wrong PR, stop: the identity rule does not hold.
+Precondition: the state comment of the PR shows **no attempt `in_flight`**. For A and B that is the case after the timeout above
+(attempt 1 `timed_out`, last decision `BLOCKED / HANDOFF_TIMEOUT`). Real handoff stays off, so the gate adds no label and starts
+nothing in this step.
+
+1. Add the label `bridge:needs-fix` yourself to **A (PR #4) only**. Expect **one** Routine session (this proves a label event
+   starts a session at all). Open it: its first command is `git rev-parse HEAD`, and it must equal A's head `7c1446a`, not B's. It finds
+   no attempt in flight, so it must stop at step 2 and post, push and label nothing. Remove the label.
+2. Then do the same for **B (PR #5)**, head `6663826`. Two sessions in total, each on its own head: that is the two-PR identity check.
+
+If a session started on `main`, acted on the wrong PR, posted or pushed anything, or an attempt was `in_flight` when you labelled,
+stop: the identity rule does not hold, or the precondition was not checked.
 
 ## 6. Cost check
 
@@ -50,28 +80,33 @@ The two sessions must show seat usage only. Any credit spend: stop.
 
 ## 7. Open both locks, for the throwaway PRs only
 
-Merge a PR that sets `real_handoff_enabled` to `true` in `bridge-gate/config.json` **and** set the variable
-`BRIDGE_HANDOFF_MODE` = `label`. Then Actions → bridge-gate → Run workflow with `pr_number` = A. Expect `NEEDS_FIX`, state comment
-with attempt 1 in flight (lease 90 minutes), then the gate adds the label. Do the same for B.
+Close A and B **unmerged** first: they hold simulation history, and a closed PR decides `BLOCKED / PR_NOT_OPEN` and writes nothing.
+Merge a PR that sets `real_handoff_enabled` to `true` in `bridge-gate/config.json` **and** set the variable `BRIDGE_HANDOFF_MODE` =
+`label`. **Then** create a fresh PR C: `bridge-gate/e2e/make-synthetic-branch.sh c`, push, open it **non-draft**. Do not reuse A or B and do
+not delete any state comment. When `ci` fails on C the gate (woken by the `ci` completion) decides `NEEDS_FIX` and records
+**attempt 1/3** in flight (lease 90 minutes), then adds the label. If you see `BLOCKED / HANDOFF_LOCKED` instead, a lock is not open
+and no attempt was recorded: stop and fix that. Note the `lease_expires` of this attempt.
 
 ## 8. Does a bot-applied label fire the Routine? (checks `SECURITY.md` S17, still the Stage 1 prompt)
 
-Expect two sessions, one per PR, each finding its own PR by head, in-flight attempt 1, each posting ONE report-only comment and
-pushing nothing. **If no session starts, the label route is unavailable: stop and report.** Do not create a token or an API trigger
+Expect one session on C, finding C by its head, attempt 1/3 in flight and its lease not yet expired, posting ONE report-only comment
+and pushing nothing. **If no session starts, the label route is unavailable: stop and report.** Do not create a token or an API trigger
 (that is a separate decision).
 
 ## 9. The watchdog (checks `SECURITY.md` S15)
 
-Stage 1 never finishes an attempt, so both leases expire. Do not touch anything. Within the lease plus about two hours (the
-watchdog runs hourly at minute 23), expect for each PR: a `bridge-watchdog` run that dispatched `bridge-gate`, then the state
-`BLOCKED / HANDOFF_TIMEOUT`, the label removed, one notice. If that has not happened after 3.5 hours, dispatch the gate by hand
+Stage 1 never finishes an attempt, so C's lease expires. Do not touch anything. Within the lease plus about two hours (the
+watchdog runs hourly at minute 23), expect: a `bridge-watchdog` run that dispatched `bridge-gate`, then the state
+`BLOCKED / HANDOFF_TIMEOUT` (attempt 1 `timed_out`, 2 attempts left), the label removed, one notice. If that has not happened after 3.5 hours, dispatch the gate by hand
 and record the watchdog as **unverified**: the loop does not rely on it for safety, only for liveness.
 
 ## 10. The correction loop (Stage 2 prompt)
 
-Close PR B unmerged. Switch the Routine to the **Stage 2 correction** prompt. On PR A delete the bot's state comment (this resets
-its attempt count on purpose) and run the gate by hand (`pr_number` = A). Expect, in order: attempt 1/3 recorded; label; one
-session; **one commit** titled `Address review findings (bridge attempt 1/3)` on `claude/e2e-synthetic-a` (it makes
+Switch the Routine to the **Stage 2 correction** prompt. Nothing is reset. The head of C that timed out can never get another attempt,
+so a person pushes one harmless commit to `claude/e2e-synthetic-c` (for example a docstring change that leaves the bug in place; not an
+empty commit, and not titled `Address review findings`). The new head wakes the gate. Expect, in order: attempt **2/3** recorded
+(the timed-out attempt 1 is kept and counted); label; one session; **one commit** titled
+`Address review findings (bridge attempt 2/3)` on `claude/e2e-synthetic-c` (it makes
 `apply_discount` return `price_cents - price_cents * percent // 100`, and changes no workflow, no `bridge-gate/**`); `unit-tests`
 passes; Codex reviews the new head by itself (👀, then 👍 or a review); the gate decides `READY` and posts its notice. Nobody
 merges.
@@ -88,6 +123,6 @@ merges.
 
 ## 12. Teardown
 
-Close the test PRs unmerged and delete the `claude/e2e-synthetic-*` branches. Set `BRIDGE_HANDOFF_MODE` to anything but `label`
+Close C (A and B were closed in step 7) unmerged and delete the `claude/e2e-synthetic-*` branches. Set `BRIDGE_HANDOFF_MODE` to anything but `label`
 (or delete it) and set `real_handoff_enabled` back to `false` by a merged PR. Switch the Routine off. Keep the findings
 in `SECURITY.md`.
