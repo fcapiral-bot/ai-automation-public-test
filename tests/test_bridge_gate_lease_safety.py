@@ -62,7 +62,8 @@ class GuardTextTests(unittest.TestCase):
                            "(a) `date -u +%s` gives the current time", "(b) P is still open and non-draft",
                            "its head is still SHA", "(c) P still has exactly one bot state comment",
                            "attempt N still has status `in_flight`", "`head` SHA", "`lease_expires` later than the time from (a)",
-                           "(d) only when the write is a comment: P has no comment yet that starts with"):
+                           "(d) only when the write is a comment: P has no comment yet that starts with the STABLE PREFIX",
+                           "compared exactly and ignoring everything after the prefix"):
                 self.assertIn(needle, guard, (stage, needle))
             self.assertIn("any read fails or is ambiguous, or anything is false, THE GUARD FAILS", p)
             self.assertRegex(p, r"THE GUARD FAILS: write nothing,( push nothing,)? ?(post no comment about it, )?and stop|THE GUARD FAILS: write nothing and stop, without any comment about it")
@@ -74,7 +75,7 @@ class GuardTextTests(unittest.TestCase):
             self.assertRegex(p, r"THE GUARD FAILS: write nothing")
             self.assertTrue("without any comment about it" in p or "post no comment about it" in p, stage)
         p2 = flat(2)
-        self.assertIn('only if THE GUARD passes, post "Bridge attempt N/3 could not complete', p2)
+        self.assertIn("only if THE GUARD passes, post \"Bridge [could-not-complete] PR #<P's number> attempt N/3 on <SHA7>: <reason>\"", p2)
         self.assertIn("Only if THE GUARD passes, post at most ONE comment", p2)
         self.assertIn("If it fails or you cannot comment, just stop", p2)
         self.assertIn("Post nothing about it", flat(1))
@@ -89,7 +90,7 @@ class GuardTextTests(unittest.TestCase):
     def test_the_pr_is_named_once_and_every_later_read_and_write_names_only_it(self):
         for stage in (1, 2):
             p = flat(stage)
-            self.assertIn("Call that pull request P; every later read and write names P and nothing else", p)
+            self.assertIn("Call that pull request P (its number is P's number); every later read and write names P and nothing else", p)
             self.assertLess(p.index("git rev-parse HEAD"), p.index("Call that pull request P"))
             self.assertLess(p.index("Call that pull request P"), p.index("THE GUARD."))
 
@@ -142,7 +143,7 @@ class WriteOrderTests(unittest.TestCase):
     def test_no_unlisted_way_to_post_or_push_exists(self):
         for stage in (1, 2):
             p = flat(stage)
-            posts = re.findall(r"\bpost\b(?! nothing| no comment)(?<!about to post)", p)
+            posts = re.findall(r"\bpost\b(?! nothing| no comment| starts)(?<!about to post)", p)
             self.assertEqual(len(posts), {1: 1, 2: 3}[stage], (stage, posts))
             self.assertEqual(len(re.findall(r"git push", p)), {1: 0, 2: 1}[stage])
             self.assertEqual(len(re.findall(r"\bpush it once\b", p)), {1: 0, 2: 1}[stage])
@@ -192,20 +193,198 @@ class ReplayTests(unittest.TestCase):
     def test_a_repeated_run_posts_at_most_what_the_text_allows(self):
         """Duplicate execution: the second session's guard (d) sees the first one's comment, and a rejected push is a stop."""
         p = flat(2)
-        self.assertIn("(d) only when the write is a comment: P has no comment yet that starts with the text you are about to post", p)
+        self.assertIn("(d) only when the write is a comment: P has no comment yet that starts with the STABLE PREFIX", p)
         self.assertIn("rejected push", p)
 
     def test_the_duplicate_condition_cannot_make_the_commit_or_push_guards_unpassable(self):
         """Codex finding on 8d756ce: with no text to post, a literal reading of (d) would fail every non-comment guard."""
         for stage in (1, 2):
             p = flat(stage)
-            self.assertIn("(this condition does not apply to the commit and the push)", p, stage)
+            self.assertIn("(this does not apply to the commit and the push)", p, stage)
             self.assertNotIn("(d) P has no comment yet", p, stage)
         p = flat(2)
         # the guards before the commit and before the push name no text, so (d) must be a comment-only condition
         self.assertIn("run THE GUARD before committing", p)
         self.assertIn("Immediately before `git push`, run THE GUARD again", p)
         self.assertLess(p.index("(d) only when the write is a comment"), p.index("run THE GUARD before committing"))
+        self.assertNotIn("the text you are about to post", p)
+
+
+PREFIX = re.compile(r"^Bridge \[(report-only|pushed|could-not-complete|stopped)\] PR #(\d+) attempt (\d)/3 on ([0-9a-f]{7}):")
+
+
+def stable_prefix(text):
+    """The rule of the prompts: type, PR number, attempt and head, up to and including the colon; nothing after it counts."""
+    m = PREFIX.match(text)
+    return m.group(0) if m else None
+
+
+def is_duplicate(existing, planned):
+    mine = stable_prefix(planned)
+    return mine is not None and any(stable_prefix(c) == mine for c in existing)
+
+
+def templates(stage, pr=6, n=2, head="e8df1d3"):
+    """The comment templates the prompt gives, with the fixed fields filled in; the free wording after the colon stays a placeholder."""
+    found = re.findall(r"\"(Bridge \[[a-z-]+\] PR #<P's number> attempt N/3 on <SHA7>:[^\"]*)\"", flat(stage))
+    return [s.replace("<P's number>", str(pr)).replace("N/3", "%d/3" % n).replace("<SHA7>", head) for s in found]
+
+
+def guard_passes(world, now, write):
+    """The guard as the prompt words it, (a) to (d), for one write: write = {"kind": "comment"|"commit"|"push", "text": ..., "after_push": ...}."""
+    pr, states = world["pr"], world["state_comments"]
+    if world.get("read_failed") or len(states) != 1:
+        return False
+    a = next((x for x in states[0]["attempts"] if x["n"] == world["n"]), None)
+    if a is None or not pr["open"] or pr["draft"]:
+        return False
+    if write.get("after_push"):
+        ok_state = ((a["status"] == "in_flight" and a["lease_expires"] > now)
+                    or (a["status"] == "superseded" and a.get("next_head") == write["pushed"]))
+        if pr["head"] != write["pushed"] or a["head"] != world["sha"] or not ok_state:
+            return False
+    elif pr["head"] != world["sha"] or a["head"] != world["sha"] or a["status"] != "in_flight" or not a["lease_expires"] > now:
+        return False
+    if write["kind"] == "comment" and is_duplicate(world["comments"], write["text"]):
+        return False
+    return True
+
+
+class StablePrefixTests(unittest.TestCase):
+    """Codex finding on 2c7f905: duplicate detection compared the whole text to post, which contains generated wording."""
+
+    def test_the_old_rule_lets_two_differently_worded_comments_through_and_the_prefix_rule_does_not(self):
+        first = "Bridge report-only: attempt 1/3 on e8df1d3. I would change: add a lease recheck before the comment."
+        second = "Bridge report-only: attempt 1/3 on e8df1d3. I would change: re-read the state comment right before posting."
+        self.assertFalse(any(c.startswith(second) for c in [first]))          # the reproduced defect of the previous wording
+        a = "Bridge [report-only] PR #6 attempt 1/3 on e8df1d3: I would change: add a lease recheck."
+        b = "Bridge [report-only] PR #6 attempt 1/3 on e8df1d3: I would change: re-read the state comment first."
+        self.assertTrue(is_duplicate([a], b))
+
+    def test_every_template_in_the_prompts_has_a_stable_prefix_of_the_documented_shape(self):
+        seen = {1: set(), 2: set()}
+        for stage in (1, 2):
+            found = templates(stage)
+            self.assertTrue(found, stage)
+            for text in found:
+                m = PREFIX.match(text)
+                self.assertIsNotNone(m, text)
+                self.assertNotIn("<", m.group(0))                                  # nothing generated inside the prefix
+                seen[stage].add(m.group(1))
+        self.assertEqual(seen[1], {"report-only"})
+        self.assertEqual(seen[2], {"could-not-complete", "pushed", "stopped"})
+
+    def test_the_prefix_fields_are_the_ones_the_prompt_names(self):
+        for stage in (1, 2):
+            p = flat(stage)
+            self.assertIn("`Bridge [<type>] PR #<P's number> attempt N/3 on <SHA7>:`", p)
+            self.assertIn("`report-only`, `pushed`, `could-not-complete` or `stopped`", p)
+            self.assertIn("<SHA7> is the first seven characters of SHA", p)
+            self.assertIn("only the wording after the colon may vary", p)
+
+    def test_two_sessions_with_different_wording_for_the_same_attempt_are_duplicates(self):
+        for stage in (1, 2):
+            for text in templates(stage):
+                first = (text.replace("<one line per finding>", "fix A").replace("<reason>", "tests failed")
+                         .replace("<usage limit | permission | other>", "other"))
+                second = (text.replace("<one line per finding>", "something else entirely").replace("<reason>", "disk full")
+                          .replace("<usage limit | permission | other>", "usage limit")
+                          .replace("<your commit's first seven characters>. <one-line summary>", "abc1234. other words"))
+                self.assertTrue(is_duplicate([first], second), (stage, text))
+
+    def test_a_repeated_event_posting_the_same_comment_is_a_duplicate(self):
+        for stage in (1, 2):
+            for text in templates(stage):
+                self.assertTrue(is_duplicate([text], text), text)
+
+    def test_a_different_attempt_head_pr_or_comment_type_is_not_a_duplicate(self):
+        base = "Bridge [stopped] PR #6 attempt 2/3 on e8df1d3: other. Nothing further was pushed."
+        for other in ("Bridge [stopped] PR #6 attempt 3/3 on e8df1d3: other.",       # different attempt
+                      "Bridge [stopped] PR #6 attempt 2/3 on 724ef16: other.",        # different head
+                      "Bridge [stopped] PR #7 attempt 2/3 on e8df1d3: other.",        # different PR
+                      "Bridge [pushed] PR #6 attempt 2/3 on e8df1d3: other.",         # different type
+                      "Bridge [could-not-complete] PR #6 attempt 2/3 on e8df1d3: x"):
+            self.assertFalse(is_duplicate([other], base), other)
+            self.assertFalse(is_duplicate([base], other), other)
+
+    def test_text_that_only_looks_like_a_prefix_never_matches(self):
+        planned = "Bridge [pushed] PR #6 attempt 2/3 on e8df1d3: pushed abc1234. fix"
+        for noise in ("Bridge [pushed] PR #6 attempt 2/3 on e8df1d3", "bridge [pushed] PR #6 attempt 2/3 on e8df1d3: x",
+                      " Bridge [pushed] PR #6 attempt 2/3 on e8df1d3: x", "I will say Bridge [pushed] PR #6 attempt 2/3 on e8df1d3: x",
+                      "Bridge [pushed] PR #66 attempt 2/3 on e8df1d3: x", "Bridge [pushed] PR #6 attempt 2/3 on e8df1d3x: x"):
+            self.assertFalse(is_duplicate([noise], planned), noise)
+        self.assertFalse(is_duplicate([], planned))
+        self.assertFalse(is_duplicate(["x"], "free text with no prefix"))     # an unprefixed comment is never treated as a duplicate
+
+
+def make_world(**over):
+    st = {"n": 2, "head": sha(1), "status": "in_flight", "lease_expires": g.NOW + 600}
+    w = {"sha": sha(1), "n": 2, "pr": {"open": True, "draft": False, "head": sha(1)}, "state_comments": [{"attempts": [st]}],
+         "comments": []}
+    w.update(over)
+    return w
+
+
+def with_attempt(**fields):
+    st = {"n": 2, "head": sha(1), "status": "in_flight", "lease_expires": g.NOW + 600}
+    st.update(fields)
+    return make_world(state_comments=[{"attempts": [st]}])
+
+
+class GuardModelTests(unittest.TestCase):
+    """The guard's conditions (a) to (d) as the prompt words them, over stale heads, expired leases and duplicates, for every kind of write."""
+
+    COMMENT = {"kind": "comment", "text": "Bridge [pushed] PR #6 attempt 2/3 on 0000001: pushed abc1234. fix"}
+    WRITES = ({"kind": "comment", "text": "Bridge [report-only] PR #6 attempt 2/3 on 0000001: x"},
+              {"kind": "comment", "text": "Bridge [stopped] PR #6 attempt 2/3 on 0000001: other."}, {"kind": "commit"}, {"kind": "push"})
+
+    def test_a_healthy_world_passes_for_every_kind_of_write(self):
+        for w in self.WRITES:
+            self.assertTrue(guard_passes(make_world(), g.NOW, w), w)
+
+    def test_an_expired_lease_fails_every_write_including_at_the_exact_edge(self):
+        for w in self.WRITES:
+            self.assertFalse(guard_passes(make_world(), g.NOW + 600, w), w)        # equal to lease_expires counts as expired, like gate.jq
+            self.assertFalse(guard_passes(make_world(), g.NOW + 601, w), w)
+            self.assertTrue(guard_passes(make_world(), g.NOW + 599, w), w)
+
+    def test_a_stale_head_or_a_changed_attempt_fails_every_write(self):
+        for w in self.WRITES:
+            self.assertFalse(guard_passes(make_world(pr={"open": True, "draft": False, "head": sha(9)}), g.NOW, w), (w, "head moved"))
+            for status in ("timed_out", "superseded"):
+                self.assertFalse(guard_passes(with_attempt(status=status), g.NOW, w), (w, status))
+            self.assertFalse(guard_passes(with_attempt(head=sha(9)), g.NOW, w), (w, "attempt on another head"))
+            self.assertFalse(guard_passes(make_world(pr={"open": False, "draft": False, "head": sha(1)}), g.NOW, w), (w, "closed"))
+            self.assertFalse(guard_passes(make_world(pr={"open": True, "draft": True, "head": sha(1)}), g.NOW, w), (w, "draft"))
+
+    def test_failed_ambiguous_or_missing_state_reads_fail_every_write(self):
+        st = make_world()["state_comments"][0]
+        for w in self.WRITES:
+            self.assertFalse(guard_passes(make_world(read_failed=True), g.NOW, w), w)
+            self.assertFalse(guard_passes(make_world(state_comments=[]), g.NOW, w), w)
+            self.assertFalse(guard_passes(make_world(state_comments=[st, st]), g.NOW, w), w)
+            self.assertFalse(guard_passes(make_world(n=3), g.NOW, w), w)          # no such attempt in the state
+
+    def test_the_duplicate_condition_blocks_comments_only_and_keys_on_the_stable_prefix(self):
+        existing = ["Bridge [pushed] PR #6 attempt 2/3 on 0000001: pushed 9999999. completely different words"]
+        self.assertFalse(guard_passes(make_world(comments=existing), g.NOW, self.COMMENT))
+        self.assertTrue(guard_passes(make_world(comments=existing), g.NOW, {"kind": "commit"}))
+        self.assertTrue(guard_passes(make_world(comments=existing), g.NOW, {"kind": "push"}))
+        self.assertTrue(guard_passes(make_world(comments=existing), g.NOW,
+                                     {**self.COMMENT, "text": "Bridge [stopped] PR #6 attempt 2/3 on 0000001: other."}))
+        self.assertTrue(guard_passes(make_world(comments=existing), g.NOW,
+                                     {**self.COMMENT, "text": "Bridge [pushed] PR #6 attempt 3/3 on 0000001: pushed 1."}))
+
+    def test_the_comment_after_a_successful_push_uses_the_pushed_head_and_a_superseded_attempt(self):
+        pushed = sha(5)
+        post = {**self.COMMENT, "after_push": True, "pushed": pushed}
+        moved = {"open": True, "draft": False, "head": pushed}
+        self.assertTrue(guard_passes(make_world(pr=moved), g.NOW, post))                                   # still in flight
+        self.assertTrue(guard_passes({**with_attempt(status="superseded", next_head=pushed, lease_expires=g.NOW - 5000), "pr": moved}, g.NOW, post))
+        self.assertFalse(guard_passes({**with_attempt(status="timed_out"), "pr": moved}, g.NOW, post))
+        self.assertFalse(guard_passes({**with_attempt(status="superseded", next_head=sha(8)), "pr": moved}, g.NOW, post))
+        self.assertFalse(guard_passes(make_world(), g.NOW, post))                                          # head is not the pushed commit
+        self.assertFalse(guard_passes({**with_attempt(lease_expires=g.NOW - 1), "pr": moved}, g.NOW, post))  # in flight but expired
 
 
 class LostRaceOutcomeTests(unittest.TestCase):
