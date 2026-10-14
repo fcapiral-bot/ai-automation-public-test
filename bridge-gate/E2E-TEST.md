@@ -51,7 +51,9 @@ history and still count.** A and B have 2 of 3 attempts left, and the same head 
 * **A lease that has run out proves nothing until the gate has evaluated it.** After `lease_expires` the state still says `in_flight`
   until the gate runs again (another event, a manual dispatch, or the watchdog once the handoff is on). Both prompts now stop when the
   recorded lease is missing, not a number, or already past, and run THE GUARD (fresh reads of the PR head, the attempt's status and lease, and
-  any comment with the same stable prefix `Bridge [<type>] PR #<n> attempt N/3 on <SHA7>:`) immediately before every write: each comment, and the push (the guard runs right before the push, so after the commit exists). A failed
+  any comment with the same stable prefix `Bridge [<type>] PR #<n> attempt N/3 on <SHA7>:` written by the session's own authenticated GitHub user; a
+  stranger's identical comment is ignored, and a session that cannot read its own identity posts nothing, which in a live test reads as a missing
+  report: check the session transcript for that stop before suspecting the label route) immediately before every write: each comment, and the push (the guard runs right before the push, so after the commit exists). A failed
   guard writes nothing and posts no comment about it, so an expired attempt gets no failure comment. This narrows the race window; it is not
   atomic with the watchdog or the gate. A session can still pass the guard a moment before the lease ends and push a moment after (the
   gap between its last check and the push itself). The gate bounds that outcome: the attempt is already counted, the late commit is judged

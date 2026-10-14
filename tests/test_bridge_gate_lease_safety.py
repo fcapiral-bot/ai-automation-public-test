@@ -62,8 +62,12 @@ class GuardTextTests(unittest.TestCase):
                            "(a) `date -u +%s` gives the current time", "(b) P is still open and non-draft",
                            "its head is still SHA", "(c) P still has exactly one bot state comment",
                            "attempt N still has status `in_flight`", "`head` SHA", "`lease_expires` later than the time from (a)",
-                           "(d) only when the write is a comment: P has no comment yet that starts with the STABLE PREFIX",
-                           "compared exactly and ignoring everything after the prefix"):
+                           "(d) only when the write is a comment: first read who YOU are, fresh, as the authenticated GitHub user",
+                           "its `login`, numeric `id` and `type`", "THE GUARD FAILS; then P has no comment written by that same `login` and `id`",
+                           "starts with the STABLE PREFIX of the comment you are about to post",
+                           "compared exactly and ignoring everything after the prefix",
+                           "Comments by any other user are ignored however identical they are",
+                           "a comment whose author is missing or malformed"):
                 self.assertIn(needle, guard, (stage, needle))
             self.assertIn("any read fails or is ambiguous, or anything is false, THE GUARD FAILS", p)
             self.assertRegex(p, r"THE GUARD FAILS: write nothing,( push nothing,)? ?(post no comment about it, )?and stop|THE GUARD FAILS: write nothing and stop, without any comment about it")
@@ -193,7 +197,7 @@ class ReplayTests(unittest.TestCase):
     def test_a_repeated_run_posts_at_most_what_the_text_allows(self):
         """Duplicate execution: the second session's guard (d) sees the first one's comment, and a rejected push is a stop."""
         p = flat(2)
-        self.assertIn("(d) only when the write is a comment: P has no comment yet that starts with the STABLE PREFIX", p)
+        self.assertIn("(d) only when the write is a comment: first read who YOU are", p)
         self.assertIn("rejected push", p)
 
     def test_the_duplicate_condition_cannot_make_the_commit_or_push_guards_unpassable(self):
@@ -224,6 +228,28 @@ def is_duplicate(existing, planned):
     return mine is not None and any(stable_prefix(c) == mine for c in existing)
 
 
+ME = {"login": "fcapiral-bot", "id": 326979021, "type": "User"}
+
+
+def identity_ok(me):
+    """The prompt: login a non-empty string, id a positive integer, type present. Anything else and a comment guard fails."""
+    return (isinstance(me, dict) and isinstance(me.get("login"), str) and me["login"] != ""
+            and isinstance(me.get("id"), int) and not isinstance(me["id"], bool) and me["id"] > 0
+            and isinstance(me.get("type"), str) and me["type"] != "")
+
+
+def is_mine(comment, me):
+    u = comment.get("user") if isinstance(comment, dict) else None
+    return isinstance(u, dict) and u.get("login") == me["login"] and u.get("id") == me["id"]
+
+
+def is_my_duplicate(comments, planned, me):
+    """Same stable prefix AND written by the same login and id as the session itself; everything else is ignored."""
+    mine = stable_prefix(planned)
+    return (mine is not None and any(is_mine(c, me) and isinstance(c.get("body"), str) and stable_prefix(c["body"]) == mine
+                                     for c in comments))
+
+
 def templates(stage, pr=6, n=2, head="e8df1d3"):
     """The comment templates the prompt gives, with the fixed fields filled in; the free wording after the colon stays a placeholder."""
     found = re.findall(r"\"(Bridge \[[a-z-]+\] PR #<P's number> attempt N/3 on <SHA7>:[^\"]*)\"", flat(stage))
@@ -245,8 +271,11 @@ def guard_passes(world, now, write):
             return False
     elif pr["head"] != world["sha"] or a["head"] != world["sha"] or a["status"] != "in_flight" or not a["lease_expires"] > now:
         return False
-    if write["kind"] == "comment" and is_duplicate(world["comments"], write["text"]):
-        return False
+    if write["kind"] == "comment":
+        if world.get("me_read_failed") or not identity_ok(world.get("me")):
+            return False
+        if is_my_duplicate(world["comments"], write["text"], world["me"]):
+            return False
     return True
 
 
@@ -320,7 +349,7 @@ class StablePrefixTests(unittest.TestCase):
 def make_world(**over):
     st = {"n": 2, "head": sha(1), "status": "in_flight", "lease_expires": g.NOW + 600}
     w = {"sha": sha(1), "n": 2, "pr": {"open": True, "draft": False, "head": sha(1)}, "state_comments": [{"attempts": [st]}],
-         "comments": []}
+         "comments": [], "me": ME}
     w.update(over)
     return w
 
@@ -329,6 +358,10 @@ def with_attempt(**fields):
     st = {"n": 2, "head": sha(1), "status": "in_flight", "lease_expires": g.NOW + 600}
     st.update(fields)
     return make_world(state_comments=[{"attempts": [st]}])
+
+
+def by(user, body):
+    return {"user": user, "body": body}
 
 
 class GuardModelTests(unittest.TestCase):
@@ -366,7 +399,7 @@ class GuardModelTests(unittest.TestCase):
             self.assertFalse(guard_passes(make_world(n=3), g.NOW, w), w)          # no such attempt in the state
 
     def test_the_duplicate_condition_blocks_comments_only_and_keys_on_the_stable_prefix(self):
-        existing = ["Bridge [pushed] PR #6 attempt 2/3 on 0000001: pushed 9999999. completely different words"]
+        existing = [by(ME, "Bridge [pushed] PR #6 attempt 2/3 on 0000001: pushed 9999999. completely different words")]
         self.assertFalse(guard_passes(make_world(comments=existing), g.NOW, self.COMMENT))
         self.assertTrue(guard_passes(make_world(comments=existing), g.NOW, {"kind": "commit"}))
         self.assertTrue(guard_passes(make_world(comments=existing), g.NOW, {"kind": "push"}))
@@ -385,6 +418,88 @@ class GuardModelTests(unittest.TestCase):
         self.assertFalse(guard_passes({**with_attempt(status="superseded", next_head=sha(8)), "pr": moved}, g.NOW, post))
         self.assertFalse(guard_passes(make_world(), g.NOW, post))                                          # head is not the pushed commit
         self.assertFalse(guard_passes({**with_attempt(lease_expires=g.NOW - 1), "pr": moved}, g.NOW, post))  # in flight but expired
+
+
+class RoutineAuthorTests(unittest.TestCase):
+    """Codex finding on b0866d4: on a public repository anyone can pre-post the predictable prefix. Only the session's own authenticated
+    identity counts for duplicate suppression."""
+
+    PLANNED = {"kind": "comment", "text": "Bridge [pushed] PR #6 attempt 2/3 on 0000001: pushed abc1234. fix"}
+    PREFIXED = "Bridge [pushed] PR #6 attempt 2/3 on 0000001: whatever words"
+    STRANGER = {"login": "mallory", "id": 4242, "type": "User"}
+
+    def test_a_stranger_posting_the_identical_prefix_suppresses_nothing(self):
+        for who in (self.STRANGER, {"login": "chatgpt-codex-connector[bot]", "id": 199175422, "type": "Bot"},
+                    {"login": ME["login"], "id": 999, "type": "User"},                  # same login, another id
+                    {"login": "someone-else", "id": ME["id"], "type": "User"}):         # same id, another login
+            w = make_world(comments=[by(who, self.PREFIXED)])
+            self.assertTrue(guard_passes(w, g.NOW, self.PLANNED), who)
+            self.assertFalse(is_my_duplicate(w["comments"], self.PLANNED["text"], ME), who)
+
+    def test_the_same_author_with_the_identical_prefix_is_a_duplicate_whatever_the_wording(self):
+        for body in (self.PREFIXED, self.PLANNED["text"], "Bridge [pushed] PR #6 attempt 2/3 on 0000001: completely different"):
+            self.assertFalse(guard_passes(make_world(comments=[by(ME, body)]), g.NOW, self.PLANNED), body)
+
+    def test_a_strangers_comment_does_not_hide_the_real_ones_and_the_real_one_still_counts(self):
+        w = make_world(comments=[by(self.STRANGER, self.PREFIXED), by(ME, self.PREFIXED)])
+        self.assertFalse(guard_passes(w, g.NOW, self.PLANNED))
+        w = make_world(comments=[by(ME, self.PREFIXED), by(self.STRANGER, self.PREFIXED)])
+        self.assertFalse(guard_passes(w, g.NOW, self.PLANNED))
+
+    def test_other_prs_attempts_heads_and_types_by_the_same_author_do_not_suppress(self):
+        for other in ("Bridge [pushed] PR #7 attempt 2/3 on 0000001: x", "Bridge [pushed] PR #6 attempt 3/3 on 0000001: x",
+                      "Bridge [pushed] PR #6 attempt 2/3 on 0000002: x", "Bridge [stopped] PR #6 attempt 2/3 on 0000001: x"):
+            self.assertTrue(guard_passes(make_world(comments=[by(ME, other)]), g.NOW, self.PLANNED), other)
+
+    def test_missing_or_malformed_author_information_on_a_comment_is_ignored_not_trusted(self):
+        for user in (None, {}, "fcapiral-bot", 7, [], {"login": ME["login"]}, {"id": ME["id"]}, {"login": None, "id": None},
+                     {"login": ME["login"], "id": str(ME["id"])}):
+            w = make_world(comments=[{"user": user, "body": self.PREFIXED}])
+            self.assertTrue(guard_passes(w, g.NOW, self.PLANNED), user)
+        for bad in ({"user": ME}, {"user": ME, "body": None}, {"user": ME, "body": 5}, "not a comment", None):
+            self.assertTrue(guard_passes(make_world(comments=[bad]), g.NOW, self.PLANNED), bad)
+
+    def test_an_unverifiable_own_identity_fails_every_comment_guard_but_not_the_commit_or_push(self):
+        for me in (None, {}, "fcapiral-bot", {"login": "", "id": 1, "type": "User"}, {"login": None, "id": 1, "type": "User"},
+                   {"login": "x", "id": 0, "type": "User"}, {"login": "x", "id": -3, "type": "User"}, {"login": "x", "id": "7", "type": "User"},
+                   {"login": "x", "id": True, "type": "User"}, {"login": "x", "id": 1}, {"login": "x", "id": 1, "type": ""}):
+            self.assertFalse(guard_passes(make_world(me=me), g.NOW, self.PLANNED), me)
+            self.assertFalse(guard_passes(make_world(me=me), g.NOW, {"kind": "comment", "text": "Bridge [stopped] PR #6 attempt 2/3 on 0000001: x"}), me)
+            self.assertTrue(guard_passes(make_world(me=me), g.NOW, {"kind": "commit"}), me)
+            self.assertTrue(guard_passes(make_world(me=me), g.NOW, {"kind": "push"}), me)
+        self.assertFalse(guard_passes(make_world(me_read_failed=True), g.NOW, self.PLANNED))
+        self.assertFalse(guard_passes(make_world(read_failed=True), g.NOW, self.PLANNED))        # the comments or state could not be read
+
+    def test_a_verified_identity_never_weakens_the_lease_head_or_attempt_checks(self):
+        for w in (make_world(), ):
+            self.assertFalse(guard_passes(w, g.NOW + 600, self.PLANNED))
+            self.assertFalse(guard_passes(make_world(pr={"open": True, "draft": False, "head": sha(9)}), g.NOW, self.PLANNED))
+            for status in ("timed_out", "superseded"):
+                self.assertFalse(guard_passes(with_attempt(status=status), g.NOW, self.PLANNED), status)
+            self.assertFalse(guard_passes(make_world(state_comments=[]), g.NOW, self.PLANNED))
+        self.assertTrue(guard_passes(make_world(), g.NOW, self.PLANNED))
+
+    def test_the_prompt_reads_the_identity_at_run_time_and_names_no_account(self):
+        for stage in (1, 2):
+            p = flat(stage)
+            self.assertIn("from the GitHub API's authenticated-user endpoint", p)
+            self.assertIn("if that read fails, or `login` is not a non-empty string, `id` is not a positive integer or `type` is missing, THE GUARD FAILS", p)
+            self.assertNotRegex(p, r"fcapiral-bot(?!/)|claude\[bot\]")       # no assumed Routine account (the repository path is fine)
+            self.assertEqual(len(re.findall(r"authenticated GitHub user", p)), 1, stage)
+        for needle in ("Comments by any other user are ignored however identical they are",):
+            self.assertIn(needle, flat(1)); self.assertIn(needle, flat(2))
+
+    def test_comments_can_never_choose_or_redirect_the_pull_request(self):
+        """P is fixed in step 1 from the checked-out commit; the author and prefix checks only read P's own comments afterwards."""
+        for stage in (1, 2):
+            p = flat(stage)
+            step1 = p[p.index("1. Before changing anything"):p.index("2. Read that PR's state comment")]
+            self.assertNotRegex(step1, r"comment|author|identity|prefix")
+            self.assertLess(p.index("Call that pull request P"), p.index("authenticated GitHub user"))
+            self.assertIn("P has no comment written by that same `login` and `id`", p)             # only P's comments are compared
+            self.assertIn("every later read and write names P and nothing else", p)
+        other_pr = by(ME, "Bridge [pushed] PR #7 attempt 2/3 on 0000001: x")                         # a prefix naming another PR never matches P
+        self.assertFalse(is_my_duplicate([other_pr], self.PLANNED["text"], ME))
 
 
 class LostRaceOutcomeTests(unittest.TestCase):
@@ -448,6 +563,19 @@ class DocumentationTests(unittest.TestCase):
         sec = re.sub(r"\s+", " ", self.DOCS["SECURITY.md"])
         self.assertRegex(sec, r"\| S19 \|")
         self.assertIn("at most one extra commit", sec)
+
+    def test_the_identity_limits_are_documented_without_naming_an_assumed_bot(self):
+        sec = re.sub(r"\s+", " ", self.DOCS["SECURITY.md"])
+        self.assertRegex(sec, r"\| S20 \|")
+        for needle in ("appears as you", "not a separate bot", "cannot reliably be distinguished from the owner's manual comments",
+                       "UNVERIFIED live", "the session cannot read its own identity", "posts nothing", "never a missing safeguard"):
+            self.assertIn(needle, sec, needle)
+        rt = re.sub(r"\s+", " ", self.DOCS["ROUTINE.md"])
+        for needle in ("authenticated GitHub user", "cannot reliably be told apart from the owner's own manual comments", "not a separate bot"):
+            self.assertIn(needle, rt, needle)
+        e2e = re.sub(r"\s+", " ", self.DOCS["E2E-TEST.md"])
+        self.assertIn("a session that cannot read its own identity posts nothing", e2e)
+        self.assertNotRegex(sec + rt + e2e, r"claude\[bot\] (?:is|will be) the (?:author|identity)")
 
     def test_the_documents_describe_what_the_prompts_really_do(self):
         e2e = re.sub(r"\s+", " ", self.DOCS["E2E-TEST.md"])

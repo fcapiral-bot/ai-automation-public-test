@@ -60,6 +60,12 @@ repository; they have not been tested here, and Codex is not confirmed to be ena
 * **The prompts guard every write against an expired attempt** (`routine-prompt.md`, THE GUARD). It narrows the race window; it is not
   atomic with the watchdog or the gate, so a comment or commit landing within seconds of `lease_expires` can still happen. The gate counts it
   and the three-attempt limit holds (`SECURITY.md` S19).
+* **Whose comments the duplicate check trusts.** The prompts compare only comments written by the session's own authenticated GitHub user,
+  read at run time and never named in the prompt. The routines docs say that what a routine does through your connected GitHub identity
+  "appears as you", so the Routine's comments carry the GitHub account connected in claude.ai, **not a separate bot** (which account that is
+  cannot be seen from this repository: UNVERIFIED until a live run). A Routine using the owner's identity cannot reliably be told apart from
+  the owner's own manual comments; the owner typing the exact stable prefix would suppress a report. A session that cannot read its identity
+  posts nothing (`SECURITY.md` S20).
 * GitHub events are subject to per-routine and per-account hourly caps, and events beyond the cap are dropped.
   A dropped event looks like a stuck attempt. It is noticed, as `BLOCKED / HANDOFF_TIMEOUT` and never as a retry, when the gate is
   next evaluated after the lease: by the hourly watchdog, another event, or a manual `workflow_dispatch`.
