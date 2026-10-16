@@ -119,6 +119,24 @@ empty commit, and not titled `Address review findings`). The new head wakes the 
 passes; Codex reviews the new head by itself (👀, then 👍 or a review); the gate decides `READY` and posts its notice. Nobody
 merges.
 
+## Test 3: Stage 2 on a fresh PR (attempt 1/3, nothing reset)
+
+Proves that a Routine corrects the synthetic bug, pushes to the PR's own branch, and that fresh CI and Codex review follow. Real handoff stays off.
+
+* **Use a PR made after the marker fix.** `make-synthetic-branch.sh` now also writes `synthetic/DISPOSABLE_E2E_FIXTURE`; the repository's own
+  inert-fixture test tolerates the fixture only where that marker exists. Branches `a` to `e` predate it: on them even the correct fix leaves the
+  suite red (that one test), so Stage 2 could never reach green. Never use them.
+* **One active Routine per label.** Pause the Stage 1 Routine and create a separate Stage 2 Routine with the same trigger and the Stage 2 prompt
+  (or swap the instructions). Two active Routines on `bridge:needs-fix` would both start on one label.
+* **Clock.** Create the PR, wait for the failed `unit-tests`, the Codex finding and the gate's `in_flight` attempt 1, check at least 60 minutes of
+  lease remain, then add the label at once.
+* **Expect:** one session; one commit titled `Address review findings (bridge attempt 1/3)` directly on the head, changing only
+  `synthetic/pricing.py`; one push to `claude/e2e-synthetic-<x>`; fresh `unit-tests` (green) and a Codex rereview of the new head; the gate marks
+  attempt 1 `superseded` and decides `WAIT` until Codex finishes, then `READY`; one `Bridge [pushed]` comment. Nothing merges.
+* **Stop at once** on: a push to any other branch, a force-push, a change under `.github/**`, `bridge-gate/**` or `.claude/**`, more than one commit,
+  a merge or approval, a second session on the attempt, or any credit spend. Afterwards switch back to the Stage 1 Routine, close the PR unmerged and
+  delete its branch.
+
 ## 11. Outcomes
 
 | What you see | Result |

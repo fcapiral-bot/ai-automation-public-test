@@ -17,6 +17,22 @@ RUNBOOK = re.sub(r"\s+", " ", (g.GATE / "E2E-TEST.md").read_text())
 SCRIPT = E2E / "make-synthetic-branch.sh"
 
 
+MARKER = "DISPOSABLE_E2E_FIXTURE"
+
+
+def fixture_leaks(root):
+    """What of the synthetic fixture is present under `root` without the disposable-branch marker (empty on a marked branch)."""
+    root = pathlib.Path(root)
+    if (root / "synthetic" / MARKER).exists():
+        return []
+    leaks = []
+    if (root / "synthetic").exists():
+        leaks.append("synthetic/")
+    if list((root / "tests").glob("test_synthetic*")):
+        leaks.append("tests/test_synthetic*")
+    return leaks
+
+
 def unit_tests(root):
     return subprocess.run(["python3", "-W", "error", "-m", "unittest", "discover", "-s", "tests", "-t", "."],
                           cwd=root, capture_output=True, text=True)
@@ -46,10 +62,30 @@ class SyntheticBugTests(unittest.TestCase):
         self.assertEqual(len([l for l in text.splitlines() if l.startswith("    return")]), 1)
 
     def test_the_fixture_is_inert_in_this_repository(self):
-        """Not importable and not discovered here: only the throwaway branch gets real .py files."""
-        self.assertFalse((g.ROOT / "synthetic").exists())
+        """Not importable and not discovered here: only a throwaway branch (marked by make-synthetic-branch.sh) gets real .py files."""
         self.assertEqual(list(E2E.rglob("*.py")), [])
-        self.assertEqual(list((g.ROOT / "tests").glob("test_synthetic*")), [])
+        if (g.ROOT / "synthetic" / MARKER).exists():
+            self.skipTest("a disposable claude/e2e-synthetic-* branch: the fixture is there on purpose and the branch is never merged")
+        self.assertEqual(fixture_leaks(g.ROOT), [])
+
+    def test_the_inert_check_is_strict_on_main_and_allows_the_fixture_only_with_the_marker(self):
+        """Test 3 needs the fixed synthetic branch to reach a green CI: the repo's own suite must tolerate the fixture there, and only there."""
+        base = pathlib.Path(tempfile.mkdtemp(prefix="e2e-inert-"))
+        self.addCleanup(shutil.rmtree, base, True)
+        self.assertEqual(fixture_leaks(base), [])                                  # a clean tree
+        (base / "synthetic").mkdir(); (base / "tests").mkdir()
+        (base / "synthetic" / "pricing.py").touch()
+        self.assertEqual(fixture_leaks(base), ["synthetic/"])                      # leaked into main without the marker
+        (base / "tests" / "test_synthetic_pricing.py").touch()
+        self.assertEqual(fixture_leaks(base), ["synthetic/", "tests/test_synthetic*"])
+        (base / "synthetic" / MARKER).touch()
+        self.assertEqual(fixture_leaks(base), [])                                  # marked: a throwaway branch
+
+    def test_the_marker_is_written_by_the_branch_script_before_it_commits(self):
+        text = SCRIPT.read_text()
+        self.assertIn("Disposable bridge end-to-end fixture. Do not land it.", text)
+        self.assertIn("> synthetic/%s" % MARKER, text)
+        self.assertLess(text.index(MARKER), text.index("git add synthetic"))
 
 
 class BranchScriptTests(unittest.TestCase):
@@ -75,6 +111,7 @@ class BranchScriptTests(unittest.TestCase):
         self.assertEqual(run("git", "ls-remote", "--heads", "origin", cwd=work).stdout.count("refs/heads/"), 1)   # only main
         self.assertIn("NON-DRAFT", out.stdout)
         self.assertEqual(unit_tests(work).returncode, 1)          # the branch carries the failing check on purpose
+        self.assertTrue((work / "synthetic" / MARKER).exists())
 
     def test_it_refuses_a_bad_suffix_and_a_dirty_tree(self):
         work, run = self.repo()
@@ -138,6 +175,13 @@ class RunbookTests(unittest.TestCase):
         for needle in ("A lease that has run out proves nothing until the gate has evaluated it", "Both prompts now stop when the",
                        "dispatch the gate first", "Three attempts per PR, same head never twice", "attempt **2/3**", "kept and counted"):
             self.assertIn(needle, RUNBOOK, needle)
+
+    def test_test_3_is_documented_with_its_prerequisites_and_stop_conditions(self):
+        sec = RUNBOOK[RUNBOOK.index("## Test 3: Stage 2 on a fresh PR"):RUNBOOK.index("## 11. Outcomes")]
+        for needle in ("attempt 1/3, nothing reset", "DISPOSABLE_E2E_FIXTURE", "Branches `a` to `e` predate it", "One active Routine per label",
+                       "at least 60 minutes of lease remain", "Address review findings (bridge attempt 1/3)", "changing only `synthetic/pricing.py`",
+                       "a force-push", "`.github/**`, `bridge-gate/**` or `.claude/**`", "Nothing merges", "switch back to the Stage 1 Routine"):
+            self.assertIn(needle, sec, needle)
 
     def test_nothing_is_activated_by_this_change(self):
         self.assertIs(g.CONFIG["real_handoff_enabled"], False)
