@@ -63,7 +63,8 @@ class GuardTextTests(unittest.TestCase):
                            "its head is still SHA", "(c) P still has exactly one bot state comment",
                            "attempt N still has status `in_flight`", "`head` SHA", "`lease_expires` later than the time from (a)",
                            "(d) only when the write is a comment: first read who YOU are, fresh, as the authenticated GitHub user",
-                           "its `login`, numeric `id` and `type`", "THE GUARD FAILS; then P has no comment written by that same `login` and `id`",
+                           "its `login` and numeric `id`", "a missing `type` is not a failure", "THE GUARD FAILS; then P has no comment written by that same `login` and `id`",
+                           "a comment matching only one of the two is a mismatch and does not count",
                            "starts with the STABLE PREFIX of the comment you are about to post",
                            "compared exactly and ignoring everything after the prefix",
                            "Comments by any other user are ignored however identical they are",
@@ -228,14 +229,13 @@ def is_duplicate(existing, planned):
     return mine is not None and any(stable_prefix(c) == mine for c in existing)
 
 
-ME = {"login": "fcapiral-bot", "id": 326979021, "type": "User"}
+ME = {"login": "fcapiral-bot", "id": 326979021}                         # the shape the GitHub MCP get_me tool returns: no type
 
 
 def identity_ok(me):
-    """The prompt: login a non-empty string, id a positive integer, type present. Anything else and a comment guard fails."""
+    """The prompt: login a non-empty string and id a positive integer; nothing else is read. Anything else and a comment guard fails."""
     return (isinstance(me, dict) and isinstance(me.get("login"), str) and me["login"] != ""
-            and isinstance(me.get("id"), int) and not isinstance(me["id"], bool) and me["id"] > 0
-            and isinstance(me.get("type"), str) and me["type"] != "")
+            and isinstance(me.get("id"), int) and not isinstance(me["id"], bool) and me["id"] > 0)
 
 
 def is_mine(comment, me):
@@ -460,15 +460,39 @@ class RoutineAuthorTests(unittest.TestCase):
             self.assertTrue(guard_passes(make_world(comments=[bad]), g.NOW, self.PLANNED), bad)
 
     def test_an_unverifiable_own_identity_fails_every_comment_guard_but_not_the_commit_or_push(self):
-        for me in (None, {}, "fcapiral-bot", {"login": "", "id": 1, "type": "User"}, {"login": None, "id": 1, "type": "User"},
-                   {"login": "x", "id": 0, "type": "User"}, {"login": "x", "id": -3, "type": "User"}, {"login": "x", "id": "7", "type": "User"},
-                   {"login": "x", "id": True, "type": "User"}, {"login": "x", "id": 1}, {"login": "x", "id": 1, "type": ""}):
+        for me in (None, {}, "fcapiral-bot", 7, [], {"login": "", "id": 1}, {"login": None, "id": 1}, {"login": 5, "id": 1}, {"id": 1},
+                   {"login": "x"}, {"login": "x", "id": None}, {"login": "x", "id": 0}, {"login": "x", "id": -3}, {"login": "x", "id": "7"},
+                   {"login": "x", "id": True}, {"login": "x", "id": 1.5}, {"login": "x", "id": [1]}):
             self.assertFalse(guard_passes(make_world(me=me), g.NOW, self.PLANNED), me)
             self.assertFalse(guard_passes(make_world(me=me), g.NOW, {"kind": "comment", "text": "Bridge [stopped] PR #6 attempt 2/3 on 0000001: x"}), me)
             self.assertTrue(guard_passes(make_world(me=me), g.NOW, {"kind": "commit"}), me)
             self.assertTrue(guard_passes(make_world(me=me), g.NOW, {"kind": "push"}), me)
         self.assertFalse(guard_passes(make_world(me_read_failed=True), g.NOW, self.PLANNED))
         self.assertFalse(guard_passes(make_world(read_failed=True), g.NOW, self.PLANNED))        # the comments or state could not be read
+
+    def test_a_missing_type_is_not_a_failure_for_any_kind_of_comment(self):
+        """Test 3 (PR #11): get_me returned login and id but no type, and the old rule silently blocked the success, failure and stop comments."""
+        get_me = {"login": "fcapiral-bot", "id": 326979021, "html_url": "https://github.com/fcapiral-bot", "name": None}   # real shape: no `type`
+        for me in (get_me, {"login": "x", "id": 1}, {"login": "x", "id": 1, "type": "User"}, {"login": "x", "id": 1, "type": None},
+                   {"login": "x", "id": 1, "type": ""}, {"login": "x", "id": 1, "type": 5}):
+            self.assertTrue(identity_ok(me), me)
+            for text in ("Bridge [report-only] PR #6 attempt 2/3 on 0000001: x", "Bridge [could-not-complete] PR #6 attempt 2/3 on 0000001: why",
+                         "Bridge [stopped] PR #6 attempt 2/3 on 0000001: other.", "Bridge [pushed] PR #6 attempt 2/3 on 0000001: pushed abc1234. fix"):
+                self.assertTrue(guard_passes(make_world(me=me), g.NOW, {"kind": "comment", "text": text}), (me, text))
+        pushed = sha(5)
+        post = {"kind": "comment", "text": "Bridge [pushed] PR #6 attempt 2/3 on 0000001: pushed abc1234. fix", "after_push": True, "pushed": pushed}
+        world = make_world(me=get_me, pr={"open": True, "draft": False, "head": pushed})
+        self.assertTrue(guard_passes(world, g.NOW, post))                                          # the post-push comment of Test 3
+
+    def test_identity_comparison_needs_both_login_and_id_and_ignores_everything_else_about_the_author(self):
+        me = {"login": "fcapiral-bot", "id": 326979021}
+        text = "Bridge [pushed] PR #6 attempt 2/3 on 0000001: x"
+        for author, dup in (({"login": "fcapiral-bot", "id": 326979021}, True),
+                            ({"login": "fcapiral-bot", "id": 326979021, "type": "User"}, True),            # extra fields change nothing
+                            ({"login": "fcapiral-bot", "id": 326979021, "type": "Bot"}, True),
+                            ({"login": "fcapiral-bot", "id": 1}, False), ({"login": "other", "id": 326979021}, False),
+                            ({"login": "FCAPIRAL-BOT", "id": 326979021}, False), ({"login": "fcapiral-bot", "id": "326979021"}, False)):
+            self.assertEqual(is_my_duplicate([by(author, text)], text, me), dup, author)
 
     def test_a_verified_identity_never_weakens_the_lease_head_or_attempt_checks(self):
         for w in (make_world(), ):
@@ -483,7 +507,9 @@ class RoutineAuthorTests(unittest.TestCase):
         for stage in (1, 2):
             p = flat(stage)
             self.assertIn("from the GitHub API's authenticated-user endpoint", p)
-            self.assertIn("if that read fails, or `login` is not a non-empty string, `id` is not a positive integer or `type` is missing, THE GUARD FAILS", p)
+            self.assertIn("if that read fails, or `login` is not a non-empty string or `id` is not a positive integer, THE GUARD FAILS", p)
+            self.assertNotIn("`type` is missing, THE GUARD FAILS", p)                  # Test 3: get_me omits type; requiring it silenced every comment
+            self.assertNotRegex(p, r"(?i)\btype\b[^.]{0,40}(must|required|missing, THE GUARD)")
             self.assertNotRegex(p, r"fcapiral-bot(?!/)|claude\[bot\]")       # no assumed Routine account (the repository path is fine)
             self.assertEqual(len(re.findall(r"authenticated GitHub user", p)), 1, stage)
         for needle in ("Comments by any other user are ignored however identical they are",):
@@ -576,6 +602,12 @@ class DocumentationTests(unittest.TestCase):
         e2e = re.sub(r"\s+", " ", self.DOCS["E2E-TEST.md"])
         self.assertIn("a session that cannot read its own identity posts nothing", e2e)
         self.assertNotRegex(sec + rt + e2e, r"claude\[bot\] (?:is|will be) the (?:author|identity)")
+
+    def test_the_docs_say_login_and_id_are_the_identity_and_type_is_not_needed(self):
+        sec = re.sub(r"\s+", " ", self.DOCS["SECURITY.md"])
+        self.assertIn("reads its `login` and numeric `id` from the API at run time (not `type`: the GitHub MCP `get_me` tool the Routine uses omits it", sec)
+        self.assertIn("(the read fails, `login` missing or empty, `id` missing or not a positive integer)", sec)
+        self.assertNotRegex(sec, r"numeric `id` and `type`|`type` missing\)")
 
     def test_the_documents_describe_what_the_prompts_really_do(self):
         e2e = re.sub(r"\s+", " ", self.DOCS["E2E-TEST.md"])
