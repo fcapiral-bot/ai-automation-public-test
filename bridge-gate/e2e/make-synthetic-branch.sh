@@ -12,6 +12,7 @@ git fetch -q origin main
 git switch -q -c "$branch" origin/main
 mkdir -p synthetic
 : > synthetic/__init__.py
+printf 'Disposable bridge end-to-end fixture. Do not land it.\n' > synthetic/DISPOSABLE_E2E_FIXTURE
 cp "$here/synthetic/pricing.py.txt" synthetic/pricing.py
 cp "$here/synthetic/test_pricing.py.txt" tests/test_synthetic_pricing.py
 git add synthetic tests/test_synthetic_pricing.py
