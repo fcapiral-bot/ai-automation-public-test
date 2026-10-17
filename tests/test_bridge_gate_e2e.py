@@ -121,6 +121,61 @@ class SyntheticBugTests(unittest.TestCase):
         self.assertLess(text.index(MARKER), text.index("git add synthetic"))
 
 
+class TwoStageFixtureTests(unittest.TestCase):
+    """Test 4B's fixture: a first defect that CI and a local run both show, and a second that only GitHub Actions shows, and only once the first is fixed."""
+
+    def tree(self):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="e2e-two-stage-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "synthetic").mkdir(); (root / "tests").mkdir()
+        (root / "synthetic" / "__init__.py").touch(); (root / "tests" / "__init__.py").touch()
+        for src, dst in (("pricing.py.txt", "synthetic/pricing.py"), ("test_pricing.py.txt", "tests/test_synthetic_pricing.py"),
+                         ("receipt.py.txt", "synthetic/receipt.py"), ("test_receipt.py.txt", "tests/test_synthetic_receipt.py")):
+            shutil.copy(E2E / "synthetic" / src, root / dst)
+        return root
+
+    def run_tests(self, root, in_actions):
+        env = {k: v for k, v in os.environ.items() if k != "GITHUB_ACTIONS"}
+        if in_actions:
+            env["GITHUB_ACTIONS"] = "true"
+        return subprocess.run(["python3", "-W", "error", "-m", "unittest", "discover", "-s", "tests", "-t", "."],
+                              cwd=root, capture_output=True, text=True, env=env)
+
+    def fix_discount(self, root):
+        src = root / "synthetic" / "pricing.py"
+        src.write_text(src.read_text().replace("return price_cents * percent // 100", "return price_cents - price_cents * percent // 100"))
+
+    def fix_receipt(self, root):
+        src = root / "synthetic" / "receipt.py"
+        src.write_text(src.read_text().replace("{cents / 100}", "{cents / 100:.2f}"))
+
+    def test_stage_one_looks_the_same_locally_and_in_actions_and_hides_stage_two(self):
+        root = self.tree()
+        for in_actions in (False, True):
+            bad = self.run_tests(root, in_actions)
+            self.assertIn("FAILED (failures=4)", bad.stderr, in_actions)
+            self.assertNotIn("Receipt", bad.stderr)
+
+    def test_a_correct_first_fix_is_green_locally_but_red_in_actions(self):
+        root = self.tree()
+        self.fix_discount(root)
+        self.assertEqual(self.run_tests(root, False).returncode, 0)          # what the correction session can run before it pushes
+        red = self.run_tests(root, True)                                    # what CI then reports on the pushed head
+        self.assertEqual(red.returncode, 1)
+        self.assertIn("FAILED (failures=2)", red.stderr)
+        self.assertIn("ReceiptLineTests", red.stderr)
+
+    def test_the_second_fix_makes_it_green_everywhere(self):
+        root = self.tree()
+        self.fix_discount(root); self.fix_receipt(root)
+        for in_actions in (False, True):
+            self.assertEqual(self.run_tests(root, in_actions).returncode, 0, in_actions)
+
+    def test_the_stage_two_files_are_covered_by_the_same_leak_guard(self):
+        root = self.tree()
+        self.assertEqual(fixture_leaks(root, "main"), ["synthetic/", "tests/test_synthetic*"])
+
+
 class BranchScriptTests(unittest.TestCase):
     def repo(self):
         base = pathlib.Path(tempfile.mkdtemp(prefix="e2e-branch-"))
@@ -145,6 +200,25 @@ class BranchScriptTests(unittest.TestCase):
         self.assertIn("NON-DRAFT", out.stdout)
         self.assertEqual(unit_tests(work).returncode, 1)          # the branch carries the failing check on purpose
         self.assertTrue((work / "synthetic" / MARKER).exists())
+
+    def test_two_stage_adds_the_ci_only_defect_in_the_same_single_commit(self):
+        work, run = self.repo()
+        run("bridge-gate/e2e/make-synthetic-branch.sh", "4b-a", "two-stage", cwd=work)
+        self.assertEqual(run("git", "branch", "--show-current", cwd=work).stdout.strip(), "claude/e2e-synthetic-4b-a")
+        self.assertEqual(run("git", "rev-list", "--count", "origin/main..HEAD", cwd=work).stdout.strip(), "1")
+        files = run("git", "show", "--name-only", "--format=", "HEAD", cwd=work).stdout.split()
+        self.assertEqual(sorted(files), ["synthetic/DISPOSABLE_E2E_FIXTURE", "synthetic/__init__.py", "synthetic/pricing.py", "synthetic/receipt.py",
+                                         "tests/test_synthetic_pricing.py", "tests/test_synthetic_receipt.py"])
+        self.assertEqual(unit_tests(work).returncode, 1)
+
+    def test_the_default_is_still_the_one_stage_fixture(self):
+        work, run = self.repo()
+        run("bridge-gate/e2e/make-synthetic-branch.sh", "a", cwd=work)
+        self.assertFalse((work / "synthetic" / "receipt.py").exists())
+
+    def test_it_refuses_an_unknown_second_argument(self):
+        work, run = self.repo()
+        self.assertNotEqual(subprocess.run([str(work / SCRIPT.relative_to(g.ROOT)), "a", "three-stage"], cwd=work, capture_output=True).returncode, 0)
 
     def test_it_refuses_a_bad_suffix_and_a_dirty_tree(self):
         work, run = self.repo()
@@ -215,6 +289,15 @@ class RunbookTests(unittest.TestCase):
                        "at least 60 minutes of lease remain", "Address review findings (bridge attempt 1/3)", "changing only `synthetic/pricing.py`",
                        "a force-push", "`.github/**`, `bridge-gate/**` or `.claude/**`", "Nothing merges", "switch back to the Stage 1 Routine"):
             self.assertIn(needle, sec, needle)
+
+    def test_test_4b_is_documented_with_its_scope_its_inconclusive_outcome_and_its_stop_conditions(self):
+        section = RUNBOOK.split("## Test 4B")[1].split("## 11. Outcomes")[0]
+        for needle in ("handoff_branch_prefix", "claude/e2e-synthetic-4b-", "HANDOFF_OUT_OF_SCOPE", "two-stage", "only on GitHub Actions",
+                       "Address review findings (bridge attempt 1/3)", "Address review findings (bridge attempt 2/3)", "a third attempt",
+                       "inconclusive", "`READY`", "BRIDGE_KILL_SWITCH=true", "Never label or touch PR #2", "human-only merge rule", "non-draft"):
+            self.assertIn(needle, section, needle)
+        self.assertIn("S21", (g.GATE / "SECURITY.md").read_text())
+        self.assertIn("HANDOFF_OUT_OF_SCOPE", (g.GATE / "README.md").read_text())
 
     def test_nothing_is_activated_by_this_change(self):
         self.assertIs(g.CONFIG["real_handoff_enabled"], False)

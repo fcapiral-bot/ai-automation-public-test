@@ -32,7 +32,7 @@ if ! [[ ${REPO:-} =~ ^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$ && ${PR_NUMBE
 fi
 base="repos/$REPO"
 
-one pr '{number, state, merged, draft, head_sha: .head.sha, head_repo: .head.repo.full_name, base_repo: .base.repo.full_name, labels: [.labels[].name]}' "$base/pulls/$PR_NUMBER"
+one pr '{number, state, merged, draft, head_sha: .head.sha, head_ref: .head.ref, head_repo: .head.repo.full_name, base_repo: .base.repo.full_name, labels: [.labels[].name]}' "$base/pulls/$PR_NUMBER"
 HEAD=$(jq -r '.head_sha // empty' "$tmp/pr.json")
 if ! [[ $HEAD =~ ^[0-9a-f]{40}$ ]]; then HEAD=""; inc+=("head"); fi
 
@@ -81,23 +81,27 @@ jq --arg login "$(jq -r .codex.login "$CFG")" \
 mode=${HANDOFF_MODE:-simulate}; [[ $mode == label ]] || mode=simulate
 # Real mode only: is the activation lock CONFIRMED open on the default branch? Decided here, before any attempt is recorded,
 # so a closed or unreadable lock can never leave a false in-flight attempt. Anything but a boolean true reads as closed.
-lock=null
+# The handoff scope (`handoff_branch_prefix`) is read from the same default-branch file, never from the PR's own tree.
+lock=null; scope=null
 if [[ $mode == label ]]; then
   lock=false
   if [[ ${DEFAULT_BRANCH:-} =~ ^[A-Za-z0-9._/-]{1,100}$ && ! ${DEFAULT_BRANCH:-} =~ \.\. ]] &&
-     "$GH" api -H 'Accept: application/vnd.github.raw+json' "$base/contents/bridge-gate/config.json?ref=$DEFAULT_BRANCH" 2>/dev/null |
-       jq -e '.real_handoff_enabled == true' >/dev/null 2>&1; then lock=true; fi
+     dcfg=$("$GH" api -H 'Accept: application/vnd.github.raw+json' "$base/contents/bridge-gate/config.json?ref=$DEFAULT_BRANCH" 2>/dev/null) &&
+     jq -e '.real_handoff_enabled == true' <<<"$dcfg" >/dev/null 2>&1; then
+    lock=true
+    scope=$(jq -c '.handoff_branch_prefix' <<<"$dcfg" 2>/dev/null) || scope=false
+  fi
 fi
 jq -n \
   --argjson now "${NOW:-$(date +%s)}" --arg name "${EVENT_NAME:-}" --arg key "${EVENT_KEY:-}" \
-  --argjson kill "$([[ ${KILL_SWITCH:-} == true ]] && echo true || echo false)" --arg mode "$mode" --argjson lock "$lock" \
+  --argjson kill "$([[ ${KILL_SWITCH:-} == true ]] && echo true || echo false)" --arg mode "$mode" --argjson lock "$lock" --argjson scope "$scope" \
   --argjson wid "${WID:-0}" --argjson state "$state" --argjson sid "$state_id" \
   --argjson inc "$(printf '%s\n' ${inc[@]+"${inc[@]}"} | jq -R . | jq -s 'map(select(length > 0)) | unique')" \
   --slurpfile pr "$tmp/pr.json" --slurpfile reviews "$tmp/reviews.json" --slurpfile rc "$tmp/review_comments.json" \
   --slurpfile ic "$tmp/issue_comments.json" --slurpfile cr "$tmp/check_runs.json" --slurpfile st "$tmp/status.json" \
   --slurpfile runs "$tmp/runs.json" --slurpfile hc "$tmp/head_commit.json" --slurpfile notices "$tmp/notices.json" '
   {now: $now, event: {name: $name, key: (if $key == "" then null else $key end)}, incomplete: $inc,
-   kill_switch: $kill, handoff_mode: $mode, handoff_lock_open: $lock, pr: $pr[0], reviews: $reviews[0], review_comments: $rc[0],
+   kill_switch: $kill, handoff_mode: $mode, handoff_lock_open: $lock, handoff_scope: $scope, pr: $pr[0], reviews: $reviews[0], review_comments: $rc[0],
    issue_comments: $ic[0], check_runs: $cr[0], combined_status: $st[0],
    head_commit: $hc[0], own_suite_ids: [$runs[0][] | select(.workflow_id == $wid) | .suite],
    notices: $notices[0], state: $state, state_comment_id: $sid}'

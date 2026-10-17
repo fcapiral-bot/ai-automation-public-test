@@ -76,6 +76,13 @@ $facts[0] as $f | $cfg[0] as $c
                         and .status == "completed" and .conclusion == "success")] | length;
   # Real mode with an activation lock that is not CONFIRMED open: no handoff can start, so none may be recorded.
   def lock_blocked: $f.handoff_mode == "label" and $f.handoff_lock_open != true;
+  # Real mode only: when the DEFAULT branch's config names a `handoff_branch_prefix` (collected as `handoff_scope`, never read from the PR's own
+  # tree), a label may be applied only to a pull request whose head branch starts with it. Anything else (no branch fact, a non-string prefix)
+  # is out of scope: the gate waits and hands off nothing. No prefix (null or "") means no scope.
+  def out_of_scope:
+    $f.handoff_scope as $p
+    | $f.handoff_mode == "label" and $p != null and $p != ""
+      and (($p | type) != "string" or (($f.pr.head_ref | type) != "string") or ($f.pr.head_ref | startswith($p) | not));
 
   # ---- persistent per-PR / per-head attempt state ----
   # An in-flight attempt is finished ONLY by evidence that its own session pushed: the current head is a single
@@ -113,7 +120,8 @@ $facts[0] as $f | $cfg[0] as $c
      elif human_blocked then {decision: "BLOCKED", reason: "HUMAN_CHANGES_REQUESTED"}
      elif $nu > 0 then {decision: "BLOCKED", reason: "CODEX_REVIEW_UNCLASSIFIED"}
      elif $nf > 0 or ci_fail > 0 then
-       (if ($rec | length) >= $c.max_attempts then {decision: "MAX_ATTEMPTS", reason: "ATTEMPT_LIMIT"}
+       (if out_of_scope then {decision: "WAIT", reason: "HANDOFF_OUT_OF_SCOPE"}
+        elif ($rec | length) >= $c.max_attempts then {decision: "MAX_ATTEMPTS", reason: "ATTEMPT_LIMIT"}
         elif lock_blocked then {decision: "BLOCKED", reason: "HANDOFF_LOCKED"}
         else {decision: "NEEDS_FIX", handoff: true,
               reason: ([(if $nf > 0 then "CODEX_FINDINGS" else empty end), (if ci_fail > 0 then "CI_FAILING" else empty end)] | join("+"))} end)

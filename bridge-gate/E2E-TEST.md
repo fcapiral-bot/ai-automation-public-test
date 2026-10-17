@@ -139,6 +139,34 @@ Proves that a Routine corrects the synthetic bug, pushes to the PR's own branch,
   a merge or approval, a second session on the attempt, or any credit spend. Afterwards switch back to the Stage 1 Routine, close the PR unmerged and
   delete its branch.
 
+## Test 4B: automatic retry, attempt 1/3 to 2/3 (scoped real handoff)
+
+Proves, on one disposable PR, that when a correction is incomplete the gate retries by itself: attempt 1 is superseded by the session's titled commit,
+the label is released and applied again for attempt 2, the second session finishes the job, and the loop then stops (`READY`, no third attempt, no label
+left, nothing merged). Test 4A already showed that a label applied by `github-actions[bot]` starts the Routine. The three-attempt limit, the lease check
+and the human-only merge rule are unchanged.
+
+* **The fixture is two-stage.** `bridge-gate/e2e/make-synthetic-branch.sh 4b-a two-stage` adds the usual buggy discount helper (visible in CI and
+  locally) and a receipt-format defect that fails **only on GitHub Actions and only once the discount is fixed**. The first session can run the suite
+  green locally and push a correct first fix, and `unit-tests` then fails on the new head for the second defect: that failure, not a person, causes
+  attempt 2. A session that reads `tests/test_synthetic_receipt.py` and fixes both defects in one go is **inconclusive**, not a failure (below).
+* **Scope.** `handoff_branch_prefix` (`claude/e2e-synthetic-4b-`) in the default branch's `config.json` limits the real handoff to that one branch
+  family: any other PR decides `WAIT / HANDOFF_OUT_OF_SCOPE`, records no attempt and gets no label, even while both locks are open (`SECURITY.md` S21).
+  Branch suffix must therefore start with `4b-`.
+* **Before opening the locks.** Close the older disposable PRs unmerged (the watchdog scans every open PR while real mode is on) and keep the Stage 2
+  Routine as the only active Routine on the label. Never label or touch PR #2.
+* **Locks (your actions, a window of about an hour).** A tiny merged PR sets `real_handoff_enabled` to `true`; then set the variable
+  `BRIDGE_HANDOFF_MODE` to `label`. Open both only when everything above is ready and close both as soon as the test ends (step 12).
+* **Run.** Create the PR with the script, push it and open it **non-draft**. Expect: `ci` fails (4 tests) → gate `NEEDS_FIX`, attempt 1/3 in flight,
+  label added by the gate → Stage 2 session 1 → one commit `Address review findings (bridge attempt 1/3)` fixing only `synthetic/pricing.py` →
+  `unit-tests` red again (receipt) → attempt 1 `superseded`, label removed → `NEEDS_FIX`, attempt 2/3, label added → Stage 2 session 2 → one commit
+  `Address review findings (bridge attempt 2/3)` fixing `synthetic/receipt.py` → `unit-tests` green, Codex clean → `READY`. Then stop: no third attempt.
+* **Stop at once** (close both locks, set `BRIDGE_KILL_SWITCH=true`, report) on: a label on any PR other than the test PR, a third attempt, a push
+  to any other branch or any force-push, a change under `.github/**`, `bridge-gate/**` or `.claude/**`, more than one commit per session, a merge or
+  approval, two sessions on one attempt, a lease that expires with no session, or any credit spend.
+* **Outcomes.** Two titled commits and `READY`: **PASS**. Attempt 1's commit already makes CI green: **inconclusive** (one attempt used, no retry
+  exercised; do not repeat without a new authorisation). Session fails or is silent: attempt times out, `BLOCKED / HANDOFF_TIMEOUT`, **safe stop**.
+
 ## 11. Outcomes
 
 | What you see | Result |

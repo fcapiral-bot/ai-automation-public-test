@@ -39,7 +39,7 @@ class Fixture:
         atexit.register(shutil.rmtree, self.dir, True)
         self.head = head
         self.put("pulls_7", {"number": 7, "state": "open", "merged": False, "draft": False, "title": "t",
-                             "head": {"sha": head, "repo": {"full_name": "o/r"}}, "base": {"repo": {"full_name": "o/r"}},
+                             "head": {"sha": head, "ref": g.SCOPED_BRANCH, "repo": {"full_name": "o/r"}}, "base": {"repo": {"full_name": "o/r"}},
                              "labels": [{"name": "bug", "id": 1}]})
         self.put("pulls_7_reviews", [])
         self.put("pulls_7_comments", [])
@@ -91,7 +91,7 @@ class HappyPathTests(unittest.TestCase):
         facts = fx.collect(KILL_SWITCH="", HANDOFF_MODE="")
         self.assertEqual(facts["incomplete"], [])
         self.assertEqual(facts["pr"], {"number": 7, "state": "open", "merged": False, "draft": False, "head_sha": HEAD,
-                                       "head_repo": "o/r", "base_repo": "o/r", "labels": ["bug"]})
+                                       "head_ref": g.SCOPED_BRANCH, "head_repo": "o/r", "base_repo": "o/r", "labels": ["bug"]})
         self.assertEqual(facts["reviews"], [{"id": 101, "login": CODEX["login"], "uid": CODEX["uid"], "type": "Bot",
                                              "state": "COMMENTED", "commit_id": HEAD}])
         self.assertEqual(facts["review_comments"], [{"review_id": 101, "in_reply_to": None}])

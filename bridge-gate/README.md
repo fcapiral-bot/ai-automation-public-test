@@ -26,7 +26,7 @@ decides, a small guard re-checks the head, and one PR comment holds the state.
 
 | Decision | Meaning | Handoff | Notified |
 | --- | --- | --- | --- |
-| `WAIT` | Nothing to do yet (draft, awaiting Codex, CI pending, fix in flight, …) | no | no |
+| `WAIT` | Nothing to do yet (draft, awaiting Codex, CI pending, fix in flight, …), or `HANDOFF_OUT_OF_SCOPE` (real mode on, `handoff_branch_prefix` set in the default branch's `config.json`, and this PR's head branch does not start with it: no attempt, no label) | no | no |
 | `NEEDS_FIX` | Current-head Codex findings or failing CI, attempts left, nothing in flight | **yes (one)** | no |
 | `READY` | Current-head Codex review is clean **and** the designated `unit-tests` check (from the GitHub Actions app) succeeded. No other check and no legacy commit status can stand in for it; a failing or pending check of any kind still blocks. Advisory: a person merges | no | yes |
 | `BLOCKED` | Anything doubtful: API error, malformed evidence, fork/closed PR, human "changes requested", unclassified Codex review, handoff timeout, or `HANDOFF_LOCKED` (real mode on but the default-branch lock is not confirmed open: no attempt is recorded) | no | yes (not for evidence errors) |
