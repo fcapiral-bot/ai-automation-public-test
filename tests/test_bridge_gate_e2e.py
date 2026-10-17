@@ -265,7 +265,7 @@ class RunbookTests(unittest.TestCase):
 
     def test_a_real_handoff_test_starts_on_a_fresh_pr_with_the_locks_already_open(self):
         step7 = RUNBOOK[RUNBOOK.index("## 7. Open both locks"):RUNBOOK.index("## 8.")]
-        for needle in ("Close A and B **unmerged** first", "fresh PR C", "make-synthetic-branch.sh c", "**non-draft**",
+        for needle in ("Close A and B **unmerged** first", "fresh PR C", "make-synthetic-branch.sh 4b-c", "**non-draft**",
                        "do not delete any state comment", "BLOCKED / HANDOFF_LOCKED"):
             self.assertIn(needle, step7, needle)
         self.assertLess(step7.index("`BRIDGE_HANDOFF_MODE` ="), step7.index("**Then** create a fresh PR C"))
@@ -298,6 +298,15 @@ class RunbookTests(unittest.TestCase):
             self.assertIn(needle, section, needle)
         self.assertIn("S21", (g.GATE / "SECURITY.md").read_text())
         self.assertIn("HANDOFF_OUT_OF_SCOPE", (g.GATE / "README.md").read_text())
+
+    def test_every_real_handoff_branch_in_the_runbook_is_inside_the_handoff_scope(self):
+        prefix = g.CONFIG["handoff_branch_prefix"]
+        text = (g.GATE / "E2E-TEST.md").read_text()
+        steps = text.split("## 7. Open both locks")[1].split("## 11. Outcomes")[0]         # steps 7 to 10 and Test 3: the real-handoff runs
+        for name in re.findall(r"claude/e2e-synthetic-[\w<>-]+", steps):
+            self.assertTrue(name.startswith(prefix), name)
+        self.assertIn("make-synthetic-branch.sh 4b-c", steps)
+        self.assertNotRegex(steps, r"make-synthetic-branch\.sh [a-z0-9]{1,2}`")
 
     def test_nothing_is_activated_by_this_change(self):
         self.assertIs(g.CONFIG["real_handoff_enabled"], False)
