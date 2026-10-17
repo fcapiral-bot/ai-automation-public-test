@@ -5,6 +5,7 @@ does not start with it gets `WAIT / HANDOFF_OUT_OF_SCOPE`, no attempt and no lab
 human-only merge rule are untouched, and simulate mode behaves exactly as before. No network, no GitHub, no AI, no Routine.
 """
 
+import json
 import unittest
 
 from . import gate_sim as g
@@ -12,6 +13,7 @@ from .gate_sim import run_gate
 from .test_bridge_gate_codex_findings import check, clean, with_finding
 from .test_bridge_gate_collect import Fixture
 from .test_bridge_gate_retry_chain import ADD, Chain
+from .test_bridge_gate_workflow import COLLECT, DECIDE, GUARD, REAL, Runner, findings_fixture
 
 PREFIX = g.CONFIG["handoff_branch_prefix"]
 OPEN = dict(handoff_mode="label", handoff_lock_open=True, handoff_scope=PREFIX)   # the facts the collector reads from the DEFAULT branch
@@ -96,6 +98,64 @@ class ScopeCollectorTests(unittest.TestCase):
         self.assertEqual(self.collect({**g.CONFIG, "real_handoff_enabled": False})["handoff_scope"], None)
         self.assertEqual(self.collect(None)["handoff_scope"], None)
         self.assertEqual(self.collect({**g.CONFIG, "real_handoff_enabled": True}, mode="")["handoff_scope"], None)
+
+
+class ScopeRecheckTests(unittest.TestCase):
+    """label.sh re-reads the scope and the PR's CURRENT head branch right before the POST, like the lock (Codex finding on PR #15)."""
+
+    def decided(self):
+        fx = findings_fixture()
+        r = Runner(fx, unlock=True, HANDOFF_MODE="label")
+        out = r.run(steps=[COLLECT, DECIDE, GUARD])
+        self.assertEqual([p.returncode for p in out.values()], [0, 0, 0])
+        self.assertEqual((r.decision()["decision"], r.decision()["handoff"]["attempt"]), ("NEEDS_FIX", 1))
+        return fx, r
+
+    def label_writes(self, fx):
+        return [w for w in fx.writes() if "/labels" in w]
+
+    def test_in_scope_at_decision_time_and_still_in_scope_adds_the_label(self):
+        fx, r = self.decided()
+        self.assertEqual(r.run(steps=[REAL])[REAL].returncode, 0)
+        self.assertEqual(len(self.label_writes(fx)), 1)
+
+    def test_a_prefix_narrowed_after_collection_means_no_label(self):
+        fx, r = self.decided()
+        fx.put("contents_bridge-gate_config.json", {**g.CONFIG, "real_handoff_enabled": True, "handoff_branch_prefix": "claude/e2e-synthetic-4b-z"})
+        out = r.run(steps=[REAL])
+        self.assertEqual(out[REAL].returncode, 0); self.assertIn("outside handoff_branch_prefix", out[REAL].stdout)
+        self.assertEqual(self.label_writes(fx), [])
+
+    def test_a_branch_renamed_after_collection_means_no_label(self):
+        fx, r = self.decided()
+        pr = json.loads((fx.dir / "pulls_7.json").read_text())
+        pr["head"]["ref"] = "claude/other"
+        fx.put("pulls_7", pr)
+        out = r.run(steps=[REAL])
+        self.assertEqual(out[REAL].returncode, 0); self.assertIn("outside handoff_branch_prefix", out[REAL].stdout)
+        self.assertEqual(self.label_writes(fx), [])
+
+    def test_an_unreadable_branch_fails_the_step_so_a_rerun_repeats_it(self):
+        fx, r = self.decided()
+        fx.fail("pulls_7")
+        out = r.run(steps=[REAL])
+        self.assertNotEqual(out[REAL].returncode, 0); self.assertIn("cannot read the PR's head branch", out[REAL].stderr)
+        self.assertEqual(self.label_writes(fx), [])
+
+    def test_a_garbled_prefix_on_the_default_branch_refuses(self):
+        for bad in (7, False, ["claude/"]):
+            fx, r = self.decided()
+            fx.put("contents_bridge-gate_config.json", {**g.CONFIG, "real_handoff_enabled": True, "handoff_branch_prefix": bad})
+            out = r.run(steps=[REAL])
+            self.assertEqual(out[REAL].returncode, 0, bad); self.assertEqual(self.label_writes(fx), [], bad)
+
+    def test_no_prefix_means_no_scope(self):
+        fx = findings_fixture()
+        r = Runner(fx, unlock=True, HANDOFF_MODE="label")
+        fx.put("contents_bridge-gate_config.json", {k: v for k, v in {**g.CONFIG, "real_handoff_enabled": True}.items() if k != "handoff_branch_prefix"})
+        r.run(steps=[COLLECT, DECIDE, GUARD])
+        self.assertEqual(r.run(steps=[REAL])[REAL].returncode, 0)
+        self.assertEqual(len(self.label_writes(fx)), 1)
 
 
 class ScopeWorkflowTests(unittest.TestCase):

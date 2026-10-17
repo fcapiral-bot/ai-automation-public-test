@@ -20,6 +20,16 @@ if cfg=$("$GH" api -H 'Accept: application/vnd.github.raw+json' "repos/$REPO/con
 elif grep -q 'HTTP 404' "$err"; then echo "REAL handoff is locked off (no bridge-gate/config.json on the default branch); doing nothing."; exit 0
 else echo "label.sh: cannot read the activation lock ($(head -c 120 "$err")); failing so that this run can be repeated" >&2; exit 1; fi
 jq -e '.real_handoff_enabled == true' <<<"$cfg" > /dev/null 2>&1 || { echo "REAL handoff is locked off (real_handoff_enabled is not true on the default branch); doing nothing."; exit 0; }
+# The scope (`handoff_branch_prefix`, default branch) is checked again against the PR's CURRENT head branch right before the label is added,
+# like the lock: a prefix narrowed or a branch renamed since collection means no label. An unreadable branch fails the step (a re-run repeats it).
+if [[ $op == add ]]; then
+  prefix=$(jq -c '.handoff_branch_prefix' <<<"$cfg" 2>/dev/null) || prefix=false
+  if [[ $prefix != null && $prefix != '""' ]]; then
+    jq -e 'type == "string"' <<<"$prefix" > /dev/null 2>&1 || { echo "REAL handoff refused: handoff_branch_prefix is not a string; doing nothing."; exit 0; }
+    ref=$("$GH" api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.ref 2>"$err") || { echo "label.sh: cannot read the PR's head branch ($(head -c 120 "$err")); failing so that this run can be repeated" >&2; exit 1; }
+    jq -en --argjson p "$prefix" --arg r "$ref" '$r | startswith($p)' > /dev/null 2>&1 || { echo "REAL handoff refused: head branch is outside handoff_branch_prefix; doing nothing."; exit 0; }
+  fi
+fi
 label=$(jq -r .labels.needs_fix "$here/config.json"); enc=$(jq -rn --arg l "$label" '$l | @uri')
 if [[ $op == remove ]]; then
   if ! "$GH" api -X DELETE "repos/$REPO/issues/$PR_NUMBER/labels/$enc" > /dev/null 2>"$err" && ! grep -q 'HTTP 404' "$err"; then
