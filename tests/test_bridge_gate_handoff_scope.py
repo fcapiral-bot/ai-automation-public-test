@@ -13,7 +13,10 @@ from .gate_sim import run_gate
 from .test_bridge_gate_codex_findings import check, clean, with_finding
 from .test_bridge_gate_collect import Fixture
 from .test_bridge_gate_retry_chain import ADD, Chain
-from .test_bridge_gate_workflow import COLLECT, DECIDE, GUARD, REAL, Runner, findings_fixture
+from .gate_sim import sha
+from .test_bridge_gate_collect import BOT, state_comment_body
+from .test_bridge_gate_effects_reliability import fail_write
+from .test_bridge_gate_workflow import COLLECT, DECIDE, GUARD, PERSIST, REAL, Runner, findings_fixture
 
 PREFIX = g.CONFIG["handoff_branch_prefix"]
 OPEN = dict(handoff_mode="label", handoff_lock_open=True, handoff_scope=PREFIX)   # the facts the collector reads from the DEFAULT branch
@@ -101,53 +104,121 @@ class ScopeCollectorTests(unittest.TestCase):
 
 
 class ScopeRecheckTests(unittest.TestCase):
-    """label.sh re-reads the scope and the PR's CURRENT head branch right before the POST, like the lock (Codex finding on PR #15)."""
+    """label.sh re-reads the scope and the PR's CURRENT head branch right before the POST, like the lock (Codex findings on PR #15).
 
-    def decided(self):
+    The attempt is recorded before the label (write-ahead), so a refusal at that point must take back exactly that attempt: otherwise it waits
+    out its 90-minute lease, notifies a person and uses up one of the three attempts although no Routine could ever have started."""
+
+    def decided(self, prior=None):
+        """Collect, decide, guard and PERSIST attempt N for an in-scope PR; the label step has not run yet. `prior`: earlier attempts."""
         fx = findings_fixture()
+        if prior:
+            fx.put("issues_7_comments", [{"id": 555, "user": BOT, "body": state_comment_body({"v": 1, "attempts": prior, "seen": [], "last": None})}])
         r = Runner(fx, unlock=True, HANDOFF_MODE="label")
-        out = r.run(steps=[COLLECT, DECIDE, GUARD])
-        self.assertEqual([p.returncode for p in out.values()], [0, 0, 0])
-        self.assertEqual((r.decision()["decision"], r.decision()["handoff"]["attempt"]), ("NEEDS_FIX", 1))
+        out = r.run(steps=[COLLECT, DECIDE, GUARD, PERSIST])
+        self.assertEqual([p.returncode for p in out.values()], [0, 0, 0, 0], {k: v.stderr[-200:] for k, v in out.items()})
+        d = r.decision()
+        self.assertEqual((d["decision"], d["handoff"]["attempt"]), ("NEEDS_FIX", len(prior or []) + 1))
+        if not prior:                                    # a fresh PR: the state comment was CREATED by this run, GitHub now lists it
+            body = next(b.read_text() for b in r.bodies() if b.read_text().startswith("<!-- bridge-gate-state:v1 "))
+            fx.put("issues_7_comments", [{"id": 555, "user": BOT, "body": body}])
         return fx, r
 
     def label_writes(self, fx):
         return [w for w in fx.writes() if "/labels" in w]
 
-    def test_in_scope_at_decision_time_and_still_in_scope_adds_the_label(self):
-        fx, r = self.decided()
-        self.assertEqual(r.run(steps=[REAL])[REAL].returncode, 0)
-        self.assertEqual(len(self.label_writes(fx)), 1)
+    def recorded(self, fx):
+        """The attempts the state comment now holds (the last write to it)."""
+        bodies = sorted(fx.dir.glob("body-*.txt"), key=lambda q: int(q.stem.split("-")[1]))
+        last = [b.read_text() for b in bodies if b.read_text().startswith("<!-- bridge-gate-state:v1 ")][-1]
+        return json.loads(last.splitlines()[0][len("<!-- bridge-gate-state:v1 "):-len(" -->")])
 
-    def test_a_prefix_narrowed_after_collection_means_no_label(self):
-        fx, r = self.decided()
+    def narrow(self, fx):
         fx.put("contents_bridge-gate_config.json", {**g.CONFIG, "real_handoff_enabled": True, "handoff_branch_prefix": "claude/e2e-synthetic-4b-z"})
-        out = r.run(steps=[REAL])
-        self.assertEqual(out[REAL].returncode, 0); self.assertIn("outside handoff_branch_prefix", out[REAL].stdout)
-        self.assertEqual(self.label_writes(fx), [])
 
-    def test_a_branch_renamed_after_collection_means_no_label(self):
-        fx, r = self.decided()
+    def rename(self, fx):
         pr = json.loads((fx.dir / "pulls_7.json").read_text())
         pr["head"]["ref"] = "claude/other"
         fx.put("pulls_7", pr)
+
+    def test_in_scope_at_decision_time_and_still_in_scope_adds_the_label_and_keeps_the_attempt(self):
+        fx, r = self.decided()
+        self.assertEqual(r.run(steps=[REAL])[REAL].returncode, 0)
+        self.assertEqual(len(self.label_writes(fx)), 1)
+        self.assertEqual([a["status"] for a in self.recorded(fx)["attempts"]], ["in_flight"])
+
+    def test_a_prefix_narrowed_after_the_attempt_was_recorded_withdraws_it_and_applies_no_label(self):
+        fx, r = self.decided()
+        self.narrow(fx)
         out = r.run(steps=[REAL])
-        self.assertEqual(out[REAL].returncode, 0); self.assertIn("outside handoff_branch_prefix", out[REAL].stdout)
+        self.assertEqual(out[REAL].returncode, 0); self.assertIn("withdrawn", out[REAL].stdout)
+        self.assertEqual(self.label_writes(fx), [])
+        st = self.recorded(fx)
+        self.assertEqual(st["attempts"], [])
+        self.assertEqual((st["last"]["decision"], st["last"]["reason"]), ("WAIT", "HANDOFF_OUT_OF_SCOPE"))
+
+    def test_a_branch_renamed_after_the_attempt_was_recorded_withdraws_it_and_applies_no_label(self):
+        fx, r = self.decided()
+        self.rename(fx)
+        out = r.run(steps=[REAL])
+        self.assertEqual(out[REAL].returncode, 0); self.assertIn("withdrawn", out[REAL].stdout)
+        self.assertEqual((self.label_writes(fx), self.recorded(fx)["attempts"]), ([], []))
+
+    def test_a_garbled_prefix_withdraws_too(self):
+        for bad in (7, False, ["claude/"]):
+            fx, r = self.decided()
+            fx.put("contents_bridge-gate_config.json", {**g.CONFIG, "real_handoff_enabled": True, "handoff_branch_prefix": bad})
+            self.assertEqual(r.run(steps=[REAL])[REAL].returncode, 0, bad)
+            self.assertEqual((self.label_writes(fx), self.recorded(fx)["attempts"]), ([], []), bad)
+
+    def test_only_the_attempt_this_run_recorded_is_withdrawn_and_the_count_stays_honest(self):
+        prior = [{"n": 1, "head": sha(0xA), "trigger": None, "reason": "CI_FAILING", "at": g.NOW - 9000, "lease_expires": g.NOW - 3600, "status": "superseded", "next_head": sha(1)}]
+        fx, r = self.decided(prior)
+        self.assertEqual([(a["n"], a["status"]) for a in self.recorded(fx)["attempts"]], [(1, "superseded"), (2, "in_flight")])
+        self.narrow(fx)
+        self.assertEqual(r.run(steps=[REAL])[REAL].returncode, 0)
+        self.assertEqual([(a["n"], a["status"]) for a in self.recorded(fx)["attempts"]], [(1, "superseded")])      # attempt 1 untouched, none consumed
         self.assertEqual(self.label_writes(fx), [])
 
-    def test_an_unreadable_branch_fails_the_step_so_a_rerun_repeats_it(self):
+    def test_after_a_withdrawal_the_next_evaluation_is_clean_and_the_cap_is_unchanged(self):
+        fx, r = self.decided()
+        self.narrow(fx)
+        r.run(steps=[REAL])
+        # Out of scope: later events wait, record nothing and apply nothing.
+        fx.put("issues_7_comments", [{"id": 555, "user": BOT, "body": state_comment_body(self.recorded(fx))}])
+        r2 = Runner(fx, HANDOFF_MODE="label"); self.narrow(fx)
+        r2.run(steps=[COLLECT, DECIDE], EVENT_NAME="workflow_dispatch", EVENT_KEY="")
+        d = r2.decision()
+        self.assertEqual((d["decision"], d["reason"], d["handoff"], d["state"]["attempts"]), ("WAIT", "HANDOFF_OUT_OF_SCOPE", None, []))
+        # Back in scope: a NEW attempt 1 (not 2), and the limit is still three.
+        fx.put("contents_bridge-gate_config.json", {**g.CONFIG, "real_handoff_enabled": True})
+        r3 = Runner(fx, unlock=True, HANDOFF_MODE="label")
+        r3.run(steps=[COLLECT, DECIDE], EVENT_NAME="workflow_dispatch", EVENT_KEY="")
+        d = r3.decision()
+        self.assertEqual((d["decision"], d["handoff"]["attempt"], d["handoff"]["of"]), ("NEEDS_FIX", 1, 3))
+
+    def test_if_the_withdrawal_cannot_be_written_the_step_fails_loudly_and_nothing_else_is_touched(self):
+        fx, r = self.decided()
+        self.narrow(fx)
+        fail_write(fx, 2)                                  # write 1 was the persist; write 2 is the withdrawal
+        out = r.run(steps=[REAL])
+        self.assertNotEqual(out[REAL].returncode, 0); self.assertIn("could not be withdrawn", out[REAL].stderr)
+        self.assertEqual(self.label_writes(fx), [])
+
+    def test_an_unfindable_state_comment_fails_the_step_instead_of_guessing(self):
+        fx, r = self.decided()
+        self.narrow(fx)
+        fx.put("issues_7_comments", [])
+        out = r.run(steps=[REAL])
+        self.assertNotEqual(out[REAL].returncode, 0); self.assertIn("state comment cannot be found", out[REAL].stderr)
+        self.assertEqual(self.label_writes(fx), [])
+
+    def test_an_unreadable_branch_still_fails_the_step_so_a_rerun_repeats_it(self):
         fx, r = self.decided()
         fx.fail("pulls_7")
         out = r.run(steps=[REAL])
         self.assertNotEqual(out[REAL].returncode, 0); self.assertIn("cannot read the PR's head branch", out[REAL].stderr)
         self.assertEqual(self.label_writes(fx), [])
-
-    def test_a_garbled_prefix_on_the_default_branch_refuses(self):
-        for bad in (7, False, ["claude/"]):
-            fx, r = self.decided()
-            fx.put("contents_bridge-gate_config.json", {**g.CONFIG, "real_handoff_enabled": True, "handoff_branch_prefix": bad})
-            out = r.run(steps=[REAL])
-            self.assertEqual(out[REAL].returncode, 0, bad); self.assertEqual(self.label_writes(fx), [], bad)
 
     def test_no_prefix_means_no_scope(self):
         fx = findings_fixture()
