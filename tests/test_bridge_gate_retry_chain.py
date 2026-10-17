@@ -32,12 +32,12 @@ class Chain:
         self.now = g.NOW
         self.seen_writes = 0
 
-    def set_head(self, n, ci, findings=False, commit=None):
-        """Head n; `ci` in failure/pending/success/None; Codex findings on every head up to n when `findings`; `commit` = (subject, parents)."""
+    def set_head(self, n, ci, findings=False, commit=None, ref=None):
+        """Head n; `ci` in failure/pending/success/None; Codex findings on every head up to n when `findings`; `commit` = (subject, parents); `ref` = the head branch (default: inside the handoff scope)."""
         head = sha(n)
         fx = self.fx
         fx.put("pulls_7", {"number": 7, "state": "open", "merged": False, "draft": False, "title": "t",
-                           "head": {"sha": head, "repo": {"full_name": "o/r"}}, "base": {"repo": {"full_name": "o/r"}},
+                           "head": {"sha": head, "ref": ref or g.SCOPED_BRANCH, "repo": {"full_name": "o/r"}}, "base": {"repo": {"full_name": "o/r"}},
                            "labels": [{"name": g.CONFIG["labels"]["needs_fix"], "id": 2}]})
         revs = [{"id": 100 + k, "user": user(CODEX), "state": "COMMENTED", "commit_id": sha(k)} for k in range(1, n + 1) if k < n or findings]
         fx.put("pulls_7_reviews", revs)

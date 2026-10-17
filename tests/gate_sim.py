@@ -19,6 +19,7 @@ CODEX = {"login": CONFIG["codex"]["login"], "uid": CONFIG["codex"]["id"], "type"
 HUMAN = {"login": "octocat", "uid": 583231, "type": "User"}
 LOOKALIKE = {"login": CODEX["login"], "uid": 999, "type": "Bot"}  # right name, wrong id
 NOW = 1_800_000_000
+SCOPED_BRANCH = (CONFIG.get("handoff_branch_prefix") or "claude/") + "t"   # a head branch inside the configured handoff scope
 GITHUB_ACTIONS_APP_ID = 15368   # the app that produces the designated check (and the ruleset's integration_id)
 
 
@@ -48,7 +49,7 @@ def facts(head=None, **over):
         "now": NOW, "event": {"name": "pull_request_review", "key": None}, "incomplete": [], "kill_switch": False,
         "handoff_mode": "simulate",
         "pr": {"number": 7, "state": "open", "merged": False, "draft": False, "head_sha": head,
-               "head_repo": "o/r", "base_repo": "o/r", "labels": []},
+               "head_ref": SCOPED_BRANCH, "head_repo": "o/r", "base_repo": "o/r", "labels": []},
         "reviews": [], "review_comments": [], "issue_comments": [], "check_runs": [], "own_suite_ids": [],
         "head_commit": {"subject": "work in progress", "parents": []},
         "combined_status": {"state": "pending", "total": 0, "listed": 0, "sha": head},
