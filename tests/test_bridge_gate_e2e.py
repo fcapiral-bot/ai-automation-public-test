@@ -3,6 +3,7 @@
 No network, no GitHub, no AI. Runs the fixture and the script in temporary directories; creates no Routine, label or variable.
 """
 
+import os
 import pathlib
 import re
 import shutil
@@ -18,12 +19,32 @@ SCRIPT = E2E / "make-synthetic-branch.sh"
 
 
 MARKER = "DISPOSABLE_E2E_FIXTURE"
+BRANCH_PREFIX = "claude/e2e-synthetic-"
 
 
-def fixture_leaks(root):
-    """What of the synthetic fixture is present under `root` without the disposable-branch marker (empty on a marked branch)."""
+def branch_name(env, git_branch=""):
+    """The branch the suite is really running on: the PR's head branch in GitHub Actions, else the checked-out branch ('' if unknown)."""
+    if env.get("GITHUB_HEAD_REF"):
+        return env["GITHUB_HEAD_REF"]
+    if env.get("GITHUB_REF_TYPE") == "branch" and env.get("GITHUB_REF_NAME"):
+        return env["GITHUB_REF_NAME"]
+    return git_branch
+
+
+def local_branch(root):
+    try:
+        return subprocess.run(["git", "branch", "--show-current"], cwd=root, capture_output=True, text=True, timeout=20).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def fixture_leaks(root, branch):
+    """What of the synthetic fixture is present under `root` unless this really is a disposable branch.
+
+    The marker travels with the fixture, so on its own it proves nothing (a merged or cherry-picked fixture would carry it onto main).
+    The fixture is allowed only with the marker AND a branch named claude/e2e-synthetic-*; anywhere else, or if the branch is unknown, it is a leak."""
     root = pathlib.Path(root)
-    if (root / "synthetic" / MARKER).exists():
+    if (root / "synthetic" / MARKER).exists() and branch.startswith(BRANCH_PREFIX):
         return []
     leaks = []
     if (root / "synthetic").exists():
@@ -62,24 +83,36 @@ class SyntheticBugTests(unittest.TestCase):
         self.assertEqual(len([l for l in text.splitlines() if l.startswith("    return")]), 1)
 
     def test_the_fixture_is_inert_in_this_repository(self):
-        """Not importable and not discovered here: only a throwaway branch (marked by make-synthetic-branch.sh) gets real .py files."""
+        """Not importable and not discovered here: only a marked throwaway branch (claude/e2e-synthetic-*) gets real .py files."""
         self.assertEqual(list(E2E.rglob("*.py")), [])
-        if (g.ROOT / "synthetic" / MARKER).exists():
-            self.skipTest("a disposable claude/e2e-synthetic-* branch: the fixture is there on purpose and the branch is never merged")
-        self.assertEqual(fixture_leaks(g.ROOT), [])
+        branch = branch_name(os.environ, local_branch(g.ROOT))
+        leaks = fixture_leaks(g.ROOT, branch)
+        if (g.ROOT / "synthetic" / MARKER).exists() and not leaks:
+            self.skipTest("disposable branch %s: the fixture is there on purpose and the branch is never merged" % branch)
+        self.assertEqual(leaks, [], "synthetic fixture outside a disposable branch (branch=%r)" % branch)
 
-    def test_the_inert_check_is_strict_on_main_and_allows_the_fixture_only_with_the_marker(self):
-        """Test 3 needs the fixed synthetic branch to reach a green CI: the repo's own suite must tolerate the fixture there, and only there."""
+    def test_the_marker_alone_never_disables_the_guard_and_the_branch_context_must_agree(self):
+        """Codex finding on ceced1e: the marker is committed with the fixture, so a merged or cherry-picked fixture would carry it onto main."""
         base = pathlib.Path(tempfile.mkdtemp(prefix="e2e-inert-"))
         self.addCleanup(shutil.rmtree, base, True)
-        self.assertEqual(fixture_leaks(base), [])                                  # a clean tree
+        self.assertEqual(fixture_leaks(base, "main"), [])                          # a clean tree
         (base / "synthetic").mkdir(); (base / "tests").mkdir()
         (base / "synthetic" / "pricing.py").touch()
-        self.assertEqual(fixture_leaks(base), ["synthetic/"])                      # leaked into main without the marker
         (base / "tests" / "test_synthetic_pricing.py").touch()
-        self.assertEqual(fixture_leaks(base), ["synthetic/", "tests/test_synthetic*"])
+        both = ["synthetic/", "tests/test_synthetic*"]
+        self.assertEqual(fixture_leaks(base, BRANCH_PREFIX + "x"), both)           # no marker: a leak even on an e2e branch name
         (base / "synthetic" / MARKER).touch()
-        self.assertEqual(fixture_leaks(base), [])                                  # marked: a throwaway branch
+        self.assertEqual(fixture_leaks(base, BRANCH_PREFIX + "f"), [])             # marker and the e2e branch: allowed
+        for wrong in ("main", "", "claude/kind-cannon-qfijb5", "proto/bridge-gate", "claude/e2e-synthetic", "x/claude/e2e-synthetic-a"):
+            self.assertEqual(fixture_leaks(base, wrong), both, wrong)              # marker on main, an unknown or any other branch: still a leak
+
+    def test_the_branch_is_read_from_the_pr_head_in_actions_or_from_git_and_never_from_the_merge_ref(self):
+        self.assertEqual(branch_name({"GITHUB_HEAD_REF": "claude/e2e-synthetic-f", "GITHUB_REF_NAME": "10/merge", "GITHUB_REF_TYPE": "branch"}), "claude/e2e-synthetic-f")
+        self.assertEqual(branch_name({"GITHUB_REF_TYPE": "branch", "GITHUB_REF_NAME": "main"}, "ignored"), "main")
+        self.assertEqual(branch_name({"GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v1"}, "claude/e2e-synthetic-a"), "claude/e2e-synthetic-a")
+        self.assertEqual(branch_name({}, "claude/e2e-synthetic-a"), "claude/e2e-synthetic-a")
+        self.assertEqual(branch_name({}), "")                                       # unknown: the guard stays strict
+        self.assertEqual(branch_name({"GITHUB_HEAD_REF": "", "GITHUB_REF_NAME": "10/merge", "GITHUB_REF_TYPE": "branch"}), "10/merge")  # push-style refs are not e2e names
 
     def test_the_marker_is_written_by_the_branch_script_before_it_commits(self):
         text = SCRIPT.read_text()
@@ -178,7 +211,7 @@ class RunbookTests(unittest.TestCase):
 
     def test_test_3_is_documented_with_its_prerequisites_and_stop_conditions(self):
         sec = RUNBOOK[RUNBOOK.index("## Test 3: Stage 2 on a fresh PR"):RUNBOOK.index("## 11. Outcomes")]
-        for needle in ("attempt 1/3, nothing reset", "DISPOSABLE_E2E_FIXTURE", "Branches `a` to `e` predate it", "One active Routine per label",
+        for needle in ("attempt 1/3, nothing reset", "DISPOSABLE_E2E_FIXTURE", "Branches `a` to `e` predate it", "**and** a real branch named `claude/e2e-synthetic-*`", "the marker travels with the fixture and proves nothing on its own", "One active Routine per label",
                        "at least 60 minutes of lease remain", "Address review findings (bridge attempt 1/3)", "changing only `synthetic/pricing.py`",
                        "a force-push", "`.github/**`, `bridge-gate/**` or `.claude/**`", "Nothing merges", "switch back to the Stage 1 Routine"):
             self.assertIn(needle, sec, needle)

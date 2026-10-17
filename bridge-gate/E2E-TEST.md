@@ -124,7 +124,9 @@ merges.
 Proves that a Routine corrects the synthetic bug, pushes to the PR's own branch, and that fresh CI and Codex review follow. Real handoff stays off.
 
 * **Use a PR made after the marker fix.** `make-synthetic-branch.sh` now also writes `synthetic/DISPOSABLE_E2E_FIXTURE`; the repository's own
-  inert-fixture test tolerates the fixture only where that marker exists. Branches `a` to `e` predate it: on them even the correct fix leaves the
+  inert-fixture test tolerates the fixture only with that marker **and** a real branch named `claude/e2e-synthetic-*` (the PR head branch in
+  Actions, else the checked-out branch), because the marker travels with the fixture and proves nothing on its own. If a disposable PR were merged
+  by mistake, the next suite run on `main`, or on any ordinary PR, goes red. Branches `a` to `e` predate it: on them even the correct fix leaves the
   suite red (that one test), so Stage 2 could never reach green. Never use them.
 * **One active Routine per label.** Pause the Stage 1 Routine and create a separate Stage 2 Routine with the same trigger and the Stage 2 prompt
   (or swap the instructions). Two active Routines on `bridge:needs-fix` would both start on one label.
