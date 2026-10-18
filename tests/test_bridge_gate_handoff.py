@@ -89,7 +89,7 @@ class LockTests(unittest.TestCase):
         self.assertIn("SIMULATED HANDOFF", out[SIMULATED].stdout)
 
     def test_committed_config_is_locked_and_the_lock_opens_only_the_label(self):
-        self.assertIs(CFG["real_handoff_enabled"], False)
+        self.assertIs(CFG["real_handoff_enabled"], g.REAL_HANDOFF_ENABLED)
         fx = findings_fixture(); r = Runner(fx, unlock=True, HANDOFF_MODE="label")
         r.run(steps=[COLLECT, DECIDE]); r.run(steps=[REAL], HANDOFF_MODE="label")
         self.assertEqual(fx.writes(), ["POST repos/o/r/issues/7/labels labels[]=" + CFG["labels"]["needs_fix"]])

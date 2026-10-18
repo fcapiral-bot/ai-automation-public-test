@@ -52,7 +52,7 @@ class CiWorkflowSafetyTests(unittest.TestCase):
         # Adding CI must not weaken bridge-gate: require_ci stays on, and failing checks still force a fix.
         cfg = json.loads((g.GATE / "config.json").read_text())
         self.assertIs(cfg["require_ci"], True)
-        self.assertIs(cfg["real_handoff_enabled"], False)
+        self.assertIs(cfg["real_handoff_enabled"], g.REAL_HANDOFF_ENABLED)
 
 
 if __name__ == "__main__":

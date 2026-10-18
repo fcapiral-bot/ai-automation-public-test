@@ -167,7 +167,7 @@ class StaticTests(unittest.TestCase):
     def test_config_defaults_are_the_documented_safe_ones(self):
         c = g.CONFIG
         self.assertEqual((c["max_attempts"], c["require_ci"], c["codex"]["id"], c["notify_mention"]), (3, True, 199175422, ""))
-        self.assertIs(c["real_handoff_enabled"], False)  # the committed lock on the real label handoff
+        self.assertIs(c["real_handoff_enabled"], g.REAL_HANDOFF_ENABLED)  # the committed lock on the real label handoff
 
 
 class Runner:

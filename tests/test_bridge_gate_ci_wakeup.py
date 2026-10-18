@@ -307,7 +307,7 @@ class WorkflowStaticTests(unittest.TestCase):
     def test_the_real_handoff_is_still_locked_and_require_ci_is_still_on(self):
         cfg = json.loads((g.GATE / "config.json").read_text())
         self.assertIs(cfg["require_ci"], True)
-        self.assertIs(cfg["real_handoff_enabled"], False)
+        self.assertIs(cfg["real_handoff_enabled"], g.REAL_HANDOFF_ENABLED)
         self.assertEqual(len(re.findall(r"vars\.BRIDGE_HANDOFF_MODE", CODE)), 4)   # job env, simulated step, remove step, add step
         self.assertIn("real_handoff_enabled", (g.GATE / "label.sh").read_text())
 

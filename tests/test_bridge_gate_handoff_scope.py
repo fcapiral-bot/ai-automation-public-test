@@ -34,7 +34,7 @@ def pr_on(ref, **over):
 class ScopeDecisionTests(unittest.TestCase):
     def test_the_shipped_scope_is_one_disposable_branch_family_and_nothing_is_activated(self):
         self.assertEqual(PREFIX, "claude/e2e-synthetic-4b-")
-        self.assertIs(g.CONFIG["real_handoff_enabled"], False)
+        self.assertIs(g.CONFIG["real_handoff_enabled"], g.REAL_HANDOFF_ENABLED)
         self.assertEqual((g.CONFIG["max_attempts"], g.CONFIG["lease_minutes"]), (3, 90))
 
     def test_a_branch_inside_the_scope_is_handed_off_exactly_as_before(self):

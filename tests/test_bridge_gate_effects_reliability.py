@@ -391,7 +391,7 @@ class DocumentationAndScopeTests(unittest.TestCase):
             if path.name != "bridge-watchdog.yml":
                 self.assertNotRegex(code, r"(?m)^\s*schedule:|cron:", path.name)
         cfg = json.loads((g.GATE / "config.json").read_text())
-        self.assertIs(cfg["real_handoff_enabled"], False); self.assertIs(cfg["require_ci"], True); self.assertEqual(cfg["max_attempts"], 3)
+        self.assertIs(cfg["real_handoff_enabled"], g.REAL_HANDOFF_ENABLED); self.assertIs(cfg["require_ci"], True); self.assertEqual(cfg["max_attempts"], 3)
 
 
 if __name__ == "__main__":

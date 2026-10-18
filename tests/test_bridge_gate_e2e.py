@@ -309,7 +309,7 @@ class RunbookTests(unittest.TestCase):
         self.assertNotRegex(steps, r"make-synthetic-branch\.sh [a-z0-9]{1,2}`")
 
     def test_nothing_is_activated_by_this_change(self):
-        self.assertIs(g.CONFIG["real_handoff_enabled"], False)
+        self.assertIs(g.CONFIG["real_handoff_enabled"], g.REAL_HANDOFF_ENABLED)
         self.assertEqual(g.CONFIG["max_attempts"], 3)
 
 

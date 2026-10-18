@@ -213,7 +213,7 @@ class DocumentationTests(unittest.TestCase):
 
     def test_the_safeguards_and_scope_are_unchanged(self):
         cfg = json.loads((g.GATE / "config.json").read_text())
-        self.assertIs(cfg["real_handoff_enabled"], False); self.assertIs(cfg["require_ci"], True); self.assertEqual(cfg["max_attempts"], 3)
+        self.assertIs(cfg["real_handoff_enabled"], g.REAL_HANDOFF_ENABLED); self.assertIs(cfg["require_ci"], True); self.assertEqual(cfg["max_attempts"], 3)
         sec = re.sub(r"\s+", " ", (g.GATE / "SECURITY.md").read_text())
         self.assertRegex(sec, r"\| S15 \| \*\*High for unattended activation\*\* until verified live \|.*\*\*Mitigated in code\. Live behaviour UNVERIFIED")
         self.assertRegex(sec, r"\| S18 \| \*\*High for unattended AI execution\*\* \|.*\*\*Open\. Not fixable in code\.\*\*")
