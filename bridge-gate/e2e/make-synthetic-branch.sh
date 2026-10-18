@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Creates ONE throwaway branch claude/e2e-synthetic-<suffix> from origin/main holding a deliberately buggy helper and its tests
 # (the CI `unit-tests` check fails on it). It commits locally and prints the next steps; it pushes nothing and opens nothing.
-# Usage (from a clone, with a clean tree): bridge-gate/e2e/make-synthetic-branch.sh a
+# Usage (from a clone, with a clean tree): bridge-gate/e2e/make-synthetic-branch.sh a [two-stage]
+# `two-stage` adds a second defect that only CI can see, and only after the first is fixed (see E2E-TEST.md, Test 4B).
 set -euo pipefail
-suffix=${1:?usage: make-synthetic-branch.sh <suffix, e.g. a>}
+suffix=${1:?usage: make-synthetic-branch.sh <suffix, e.g. a> [two-stage]}
+stages=${2:-one-stage}
+[[ $stages == one-stage || $stages == two-stage ]] || { echo "second argument must be two-stage or omitted" >&2; exit 1; }
 [[ $suffix =~ ^[a-z0-9-]{1,20}$ ]] || { echo "suffix must be 1-20 of a-z 0-9 -" >&2; exit 1; }
 branch="claude/e2e-synthetic-$suffix"
 here=$(cd "$(dirname "$0")" && pwd)
@@ -15,6 +18,10 @@ mkdir -p synthetic
 printf 'Disposable bridge end-to-end fixture. Do not land it.\n' > synthetic/DISPOSABLE_E2E_FIXTURE
 cp "$here/synthetic/pricing.py.txt" synthetic/pricing.py
 cp "$here/synthetic/test_pricing.py.txt" tests/test_synthetic_pricing.py
-git add synthetic tests/test_synthetic_pricing.py
+if [[ $stages == two-stage ]]; then
+  cp "$here/synthetic/receipt.py.txt" synthetic/receipt.py
+  cp "$here/synthetic/test_receipt.py.txt" tests/test_synthetic_receipt.py
+fi
+git add synthetic tests                                  # the tree was clean, so this adds only the fixture
 git commit -q -m "Add synthetic pricing helper (disposable bridge end-to-end test)"
 echo "Created $branch (1 commit). Next: git push -u origin $branch, then open a NON-DRAFT pull request. Never merge it."
