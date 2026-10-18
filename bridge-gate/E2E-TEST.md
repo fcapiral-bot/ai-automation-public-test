@@ -23,7 +23,7 @@ this test must not start: the Routine acts as your admin identity.
 ## 2. Labels and Routine (Stage 1 prompt)
 
 Create the labels `bridge:needs-fix` and `bridge:usage-stop`. Create the Routine exactly as `ROUTINE.md` section 2 says, with the
-**Stage 1 report-only** prompt. `BRIDGE_HANDOFF_MODE` stays unset and `real_handoff_enabled` stays `false`.
+**Stage 1 report-only** prompt. `BRIDGE_HANDOFF_MODE` stays unset and `real_handoff_enabled` stays `false` for Stage 1 (it is `true` only inside the Test 4B window).
 
 ## 3. Two throwaway PRs with a synthetic bug
 
