@@ -20,7 +20,7 @@ HUMAN = {"login": "octocat", "uid": 583231, "type": "User"}
 LOOKALIKE = {"login": CODEX["login"], "uid": 999, "type": "Bot"}  # right name, wrong id
 # The ONE place the committed activation lock is pinned. True only for the Test 4B window (activation PR); the rollback PR sets this and
 # bridge-gate/config.json back to False together. The variable BRIDGE_HANDOFF_MODE is the second lock and is never set by a change.
-REAL_HANDOFF_ENABLED = True
+REAL_HANDOFF_ENABLED = False
 NOW = 1_800_000_000
 SCOPED_BRANCH = (CONFIG.get("handoff_branch_prefix") or "claude/") + "t"   # a head branch inside the configured handoff scope
 GITHUB_ACTIONS_APP_ID = 15368   # the app that produces the designated check (and the ruleset's integration_id)
