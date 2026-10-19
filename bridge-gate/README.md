@@ -98,7 +98,7 @@ counter on purpose, a person deletes the bot's state comment.
 The real step (adds that label; removes it when a new head supersedes the attempt) exists in the workflow but
 runs only when the repository variable `BRIDGE_HANDOFF_MODE` is exactly `label` **and** the lock
 `real_handoff_enabled` in `config.json` is `true` **on the default branch** (read over the API, never from the PR
-checkout; it is `false`, and an unreadable file counts as locked). See `ROUTINE.md`.
+checkout; the committed value is `false`, except during the Test 4B window (the activation PR sets it `true` and the rollback PR sets it back), and an unreadable file counts as locked). While it is `true` the variable is the only thing still holding the handoff off. See `ROUTINE.md`.
 
 ## Fixture dry run
 
@@ -148,8 +148,9 @@ python3 -W error -m unittest discover -s tests -t .    # whole suite (needs jq)
 ## Status
 
 Prototype. Simulated handoff only. Migrated from the private test repository (source commit `11c8fbb` of its
-`proto/bridge-gate` branch) into this public test repository. Nothing here starts Claude or Codex, and the real
-handoff stays locked (`real_handoff_enabled: false`, no `BRIDGE_HANDOFF_MODE`).
+`proto/bridge-gate` branch) into this public test repository. Nothing here starts Claude or Codex by itself, and the real
+handoff has two locks: `real_handoff_enabled` (`false`, except during the Test 4B window) and the variable `BRIDGE_HANDOFF_MODE`
+(unset). Nothing is handed off unless both are open, and then only for `handoff_branch_prefix` branches.
 
 Merge protection: `main` requires a pull request, a passing `unit-tests` check and resolved review conversations. It does **not**
 require an approving review (required approvals = 0, a deliberate owner exception for this one-person test repository), and zero

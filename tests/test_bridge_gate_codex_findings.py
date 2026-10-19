@@ -271,7 +271,7 @@ class LockBeforeAttemptTests(unittest.TestCase):
         self.assertIn("real_handoff_enabled", (g.GATE / "label.sh").read_text())
         self.assertEqual(script_of(REAL).strip(), "bridge-gate/label.sh add")
         self.assertIn("DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}", step_blocks()[COLLECT])
-        self.assertIs(CFG["real_handoff_enabled"], False)
+        self.assertIs(CFG["real_handoff_enabled"], g.REAL_HANDOFF_ENABLED)
         self.assertEqual(len(re.findall(r"vars\.BRIDGE_HANDOFF_MODE", (g.ROOT / ".github/workflows/bridge-gate.yml").read_text())), 4)
 
 
