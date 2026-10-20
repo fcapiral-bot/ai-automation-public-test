@@ -1,2 +1,2 @@
 def line(label, cents):
-    return f"{label}: ${cents / 100}"
+    return f"{label}: ${cents / 100:.2f}"
